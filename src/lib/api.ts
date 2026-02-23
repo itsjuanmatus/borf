@@ -4,10 +4,12 @@ import type {
   AlbumSortField,
   ArtistListItem,
   ArtistSortField,
+  DashboardStats,
   ItunesImportOptions,
   ItunesImportSummary,
   ItunesPreview,
   LibrarySearchResult,
+  PlayHistoryPage,
   PlaylistMutationResult,
   PlaylistNode,
   PlaylistTrackIdsResult,
@@ -201,5 +203,61 @@ export const playlistApi = {
   },
   reorderTracks(playlistId: string, orderedSongIds: string[]) {
     return invokeWithPerf<void>("playlist_reorder_tracks", { playlistId, orderedSongIds });
+  },
+};
+
+export const historyApi = {
+  recordStart(id: string, songId: string) {
+    return invokeWithPerf<void>("history_record_start", { id, songId });
+  },
+  recordEnd(id: string, durationPlayedMs: number, completed: boolean) {
+    return invokeWithPerf<void>("history_record_end", { id, durationPlayedMs, completed });
+  },
+  recordSkip(songId: string) {
+    return invokeWithPerf<void>("history_record_skip", { songId });
+  },
+  getPage(limit: number, offset: number) {
+    return invokeWithPerf<PlayHistoryPage>("history_get_page", { limit, offset });
+  },
+};
+
+export const statsApi = {
+  getDashboard(periodDays?: number | null) {
+    return invokeWithPerf<DashboardStats>("stats_get_dashboard", {
+      periodDays: periodDays ?? null,
+    });
+  },
+};
+
+export const exportApi = {
+  playlistM3u8(playlistId: string, outputPath: string) {
+    return invokeWithPerf<void>("export_playlist_m3u8", { playlistId, outputPath });
+  },
+  playStatsCsv(outputPath: string) {
+    return invokeWithPerf<void>("export_play_stats_csv", { outputPath });
+  },
+  tagsCsv(outputPath: string) {
+    return invokeWithPerf<void>("export_tags_csv", { outputPath });
+  },
+  libraryHierarchyMd(outputPath: string) {
+    return invokeWithPerf<void>("export_library_hierarchy_md", { outputPath });
+  },
+};
+
+export const mediaControlsApi = {
+  update(params: {
+    title?: string | null;
+    artist?: string | null;
+    album?: string | null;
+    durationMs?: number | null;
+    playing: boolean;
+  }) {
+    return invokeWithPerf<void>("media_controls_update", {
+      title: params.title ?? null,
+      artist: params.artist ?? null,
+      album: params.album ?? null,
+      durationMs: params.durationMs ?? null,
+      playing: params.playing,
+    });
   },
 };

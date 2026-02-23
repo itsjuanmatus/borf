@@ -11,6 +11,7 @@ interface PlaylistContextMenuProps {
   onRename: (playlist: PlaylistNode) => void;
   onDelete: (playlist: PlaylistNode) => void;
   onDuplicate: (playlist: PlaylistNode) => void;
+  onExportM3u8?: (playlist: PlaylistNode) => void;
 }
 
 export function PlaylistContextMenu({
@@ -23,6 +24,7 @@ export function PlaylistContextMenu({
   onRename,
   onDelete,
   onDuplicate,
+  onExportM3u8,
 }: PlaylistContextMenuProps) {
   const parentId = target?.is_folder ? target.id : (target?.parent_id ?? null);
 
@@ -77,6 +79,19 @@ export function PlaylistContextMenu({
               }}
             >
               Duplicate
+            </Button>
+          ) : null}
+          {!target.is_folder && onExportM3u8 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-8 w-full justify-start"
+              onClick={() => {
+                onExportM3u8(target);
+                onClose();
+              }}
+            >
+              Export as M3U8
             </Button>
           ) : null}
           <Button

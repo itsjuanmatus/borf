@@ -9,7 +9,14 @@ export type SongSortField =
 export type AlbumSortField = "name" | "artist" | "year" | "date_added";
 export type ArtistSortField = "name" | "play_count";
 export type SortOrder = "asc" | "desc";
-export type LibraryView = "songs" | "albums" | "artists" | "playlist" | "settings";
+export type LibraryView =
+  | "songs"
+  | "albums"
+  | "artists"
+  | "playlist"
+  | "settings"
+  | "history"
+  | "stats";
 export type RepeatMode = "off" | "all" | "one";
 
 export type PlaybackState = "playing" | "paused" | "stopped";
@@ -137,6 +144,70 @@ export interface AudioErrorEvent {
 export interface LibraryFileChangedEvent {
   changed_paths: string[];
   reason: string;
+}
+
+export interface PlayHistoryEntry {
+  id: string;
+  song_id: string;
+  title: string;
+  artist: string;
+  album: string;
+  artwork_path: string | null;
+  started_at: string;
+  duration_played_ms: number;
+  completed: boolean;
+}
+
+export interface PlayHistoryPage {
+  entries: PlayHistoryEntry[];
+  total: number;
+}
+
+export interface DashboardStats {
+  period_days: number | null;
+  total_songs: number;
+  total_plays: number;
+  total_listen_ms: number;
+  longest_streak_days: number;
+  top_songs: TopSongStat[];
+  top_artists: TopArtistStat[];
+  top_albums: TopAlbumStat[];
+  genre_breakdown: GenreStat[];
+  listening_by_day: DayListenStat[];
+}
+
+export interface TopSongStat {
+  song_id: string;
+  title: string;
+  artist: string;
+  artwork_path: string | null;
+  play_count: number;
+  total_listen_ms: number;
+}
+
+export interface TopArtistStat {
+  artist: string;
+  play_count: number;
+  total_listen_ms: number;
+}
+
+export interface TopAlbumStat {
+  album: string;
+  album_artist: string;
+  artwork_path: string | null;
+  play_count: number;
+  total_listen_ms: number;
+}
+
+export interface GenreStat {
+  genre: string;
+  play_count: number;
+}
+
+export interface DayListenStat {
+  date: string;
+  total_listen_ms: number;
+  play_count: number;
 }
 
 export interface ItunesPreview {

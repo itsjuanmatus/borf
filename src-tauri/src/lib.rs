@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod imports;
 mod library;
+mod media_controls;
 mod state;
 
 use std::sync::Arc;
@@ -44,7 +45,7 @@ pub fn run() {
                 .get_volume()
                 .expect("failed to resolve initial volume");
             let audio = Arc::new(
-                audio::AudioEngine::new(app_handle, initial_volume)
+                audio::AudioEngine::new(app_handle.clone(), initial_volume)
                     .expect("failed to initialize audio engine"),
             );
             let library_watcher = Arc::new(
@@ -58,7 +59,9 @@ pub fn run() {
                 let _ = library_watcher.watch_root(std::path::PathBuf::from(root));
             }
 
-            app.manage(state::AppState::new(database, audio, library_watcher));
+            let mc = Arc::new(media_controls::MediaControlsManager::new(app_handle));
+
+            app.manage(state::AppState::new(database, audio, library_watcher, mc));
 
             Ok(())
         })
@@ -103,6 +106,16 @@ pub fn run() {
             commands::audio_seek,
             commands::audio_set_volume,
             commands::audio_clear_decoded_cache,
+            commands::history_record_start,
+            commands::history_record_end,
+            commands::history_record_skip,
+            commands::history_get_page,
+            commands::stats_get_dashboard,
+            commands::export_playlist_m3u8,
+            commands::export_play_stats_csv,
+            commands::export_tags_csv,
+            commands::export_library_hierarchy_md,
+            commands::media_controls_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

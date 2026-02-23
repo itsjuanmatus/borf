@@ -12,10 +12,12 @@ import {
 import { arrayMove } from "@dnd-kit/sortable";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
+  BarChart2,
   Clock3,
   Disc3,
+  Download,
   Library,
   LoaderCircle,
   Search,
@@ -30,6 +32,8 @@ import { SongArtwork } from "./components/song-artwork";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { TooltipProvider } from "./components/ui/tooltip";
+import { HistoryView } from "./features/history/HistoryView";
+import { usePlayTracking } from "./features/history/usePlayTracking";
 import { type ImportWizardStep, ItunesImportWizard } from "./features/import/ItunesImportWizard";
 import { EditCommentDialog } from "./features/metadata/EditCommentDialog";
 import { ManageTagsDialog } from "./features/metadata/ManageTagsDialog";
@@ -39,8 +43,9 @@ import { DraggableSongButton } from "./features/playlists/DraggableSongButton";
 import { PlaylistSidebar } from "./features/playlists/PlaylistSidebar";
 import { PlaylistView } from "./features/playlists/PlaylistView";
 import { UpNextPanel } from "./features/queue/UpNextPanel";
+import { StatsView } from "./features/stats/StatsView";
 import { TagsSettingsPanel } from "./features/tags/TagsSettingsPanel";
-import { audioApi, libraryApi, playlistApi, tagsApi } from "./lib/api";
+import { audioApi, exportApi, libraryApi, mediaControlsApi, playlistApi, tagsApi } from "./lib/api";
 import { cn } from "./lib/utils";
 import { usePlayerStore } from "./stores/player-store";
 import { usePlaylistStore } from "./stores/playlist-store";
@@ -305,6 +310,12 @@ function App() {
   const [playlistTrackIdsByPlaylistId, setPlaylistTrackIdsByPlaylistId] = useState<
     Record<string, string[]>
   >({});
+  const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
+
+  const { onSongStarted, onPositionUpdate, onPaused, onResumed, onTrackEnded } = usePlayTracking();
+  const triggerStatsRefresh = useCallback(() => {
+    setStatsRefreshSignal((current) => current + 1);
+  }, []);
 
   const loadedSongPagesRef = useRef<Set<number>>(new Set());
   const loadingSongPagesRef = useRef<Set<number>>(new Set());
@@ -610,10 +621,13 @@ function App() {
 
       perfPlayRequestRef.current = { songId: song.id, startedAt: performance.now() };
       await audioApi.play(song.id, startMs);
+      onSongStarted(song);
+      triggerStatsRefresh();
       setErrorMessage(null);
       setPlayingFrom(nextQueue, queueSourceLabel, startIndex + 1);
     },
     [
+      onSongStarted,
       persistQueue,
       queueSourceLabel,
       setCurrentIndex,
@@ -622,6 +636,7 @@ function App() {
       setPlayingFrom,
       setPosition,
       setQueue,
+      triggerStatsRefresh,
     ],
   );
 
@@ -632,8 +647,10 @@ function App() {
       setNowPlaying(song);
       setPlaybackState("playing");
       setPosition(startMs ?? song.custom_start_ms ?? 0, song.duration_ms);
+      onSongStarted(song);
+      triggerStatsRefresh();
     },
-    [setNowPlaying, setPlaybackState, setPosition],
+    [setNowPlaying, setPlaybackState, setPosition, onSongStarted, triggerStatsRefresh],
   );
 
   const playQueueIndex = useCallback(
@@ -762,6 +779,28 @@ function App() {
     setPlaybackState,
     songCount,
   ]);
+
+  const handleMediaKeyPlay = useCallback(async () => {
+    const playbackState = usePlayerStore.getState().playbackState;
+    if (playbackState === "playing") {
+      return;
+    }
+    if (playbackState === "paused") {
+      await audioApi.resume();
+      setPlaybackState("playing");
+      return;
+    }
+    await handleTogglePlayback();
+  }, [handleTogglePlayback, setPlaybackState]);
+
+  const handleMediaKeyPause = useCallback(async () => {
+    const playbackState = usePlayerStore.getState().playbackState;
+    if (playbackState !== "playing") {
+      return;
+    }
+    await audioApi.pause();
+    setPlaybackState("paused");
+  }, [setPlaybackState]);
 
   const openAlbum = useCallback(async (album: AlbumListItem) => {
     setSelectedAlbum(album);
@@ -1073,6 +1112,59 @@ function App() {
     },
     [invalidatePlaylistsCache, openPlaylist, refreshPlaylists],
   );
+
+  const handleExportPlaylistM3u8 = useCallback(async (playlist: PlaylistNode) => {
+    if (playlist.is_folder) return;
+    const filePath = await save({
+      defaultPath: `${playlist.name}.m3u8`,
+      filters: [{ name: "M3U8 Playlist", extensions: ["m3u8"] }],
+    });
+    if (!filePath) return;
+    try {
+      await exportApi.playlistM3u8(playlist.id, filePath);
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  }, []);
+
+  const handleExportPlayStatsCsv = useCallback(async () => {
+    const filePath = await save({
+      defaultPath: "play-stats.csv",
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!filePath) return;
+    try {
+      await exportApi.playStatsCsv(filePath);
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  }, []);
+
+  const handleExportTagsCsv = useCallback(async () => {
+    const filePath = await save({
+      defaultPath: "tags.csv",
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!filePath) return;
+    try {
+      await exportApi.tagsCsv(filePath);
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  }, []);
+
+  const handleExportHierarchyMd = useCallback(async () => {
+    const filePath = await save({
+      defaultPath: "library-hierarchy.md",
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+    });
+    if (!filePath) return;
+    try {
+      await exportApi.libraryHierarchyMd(filePath);
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  }, []);
 
   const addSongsToQueue = useCallback(
     (songIds: string[]) => {
@@ -1867,12 +1959,35 @@ function App() {
           tracePerf("audio.play.switch", perfPlayRequestRef.current.startedAt);
           perfPlayRequestRef.current = null;
         }
+        if (event.payload.state === "paused") {
+          onPaused();
+        } else if (event.payload.state === "playing") {
+          onResumed();
+        }
       }),
       listen<AudioPositionEvent>("audio:position-update", (event) => {
         setPosition(event.payload.current_ms, event.payload.duration_ms);
+        onPositionUpdate(event.payload.current_ms);
       }),
       listen<AudioTrackEndedEvent>("audio:track-ended", () => {
+        onTrackEnded();
+        triggerStatsRefresh();
         playNext();
+      }),
+      listen("mediakey:toggle", () => {
+        void handleTogglePlayback().catch(() => {});
+      }),
+      listen("mediakey:play", () => {
+        void handleMediaKeyPlay().catch(() => {});
+      }),
+      listen("mediakey:pause", () => {
+        void handleMediaKeyPause().catch(() => {});
+      }),
+      listen("mediakey:next", () => {
+        playNext();
+      }),
+      listen("mediakey:previous", () => {
+        playPrevious();
       }),
       listen<AudioErrorEvent>("audio:error", (event) => {
         setErrorMessage(event.payload.message);
@@ -1917,14 +2032,43 @@ function App() {
     };
   }, [
     activePlaylistId,
+    handleMediaKeyPause,
+    handleMediaKeyPlay,
+    handleTogglePlayback,
     invalidatePlaylistCache,
     isScanning,
+    onPaused,
+    onPositionUpdate,
+    onResumed,
+    onTrackEnded,
     playNext,
+    playPrevious,
     refreshAllViews,
     setPlaybackState,
     setPosition,
     tracePerf,
+    triggerStatsRefresh,
   ]);
+
+  useEffect(() => {
+    if (activeView === "stats") {
+      triggerStatsRefresh();
+    }
+  }, [activeView, triggerStatsRefresh]);
+
+  // Sync Now Playing to OS media controls
+  const playbackStateForMediaSync = usePlayerStore((s) => s.playbackState);
+  useEffect(() => {
+    mediaControlsApi
+      .update({
+        title: nowPlaying?.title,
+        artist: nowPlaying?.artist,
+        album: nowPlaying?.album,
+        durationMs: nowPlaying?.duration_ms,
+        playing: playbackStateForMediaSync === "playing",
+      })
+      .catch(() => {});
+  }, [nowPlaying, playbackStateForMediaSync]);
 
   useEffect(() => {
     const unlisteners: Array<Promise<UnlistenFn>> = [
@@ -2185,6 +2329,48 @@ function App() {
                       <Settings2 className="h-4 w-4" />
                       Settings
                     </button>
+
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        activeView === "history"
+                          ? "bg-sky/30 text-text"
+                          : "text-muted hover:bg-sky/10",
+                      )}
+                      onClick={() => {
+                        setPlaylistReorderMode(false);
+                        setActiveView("history");
+                        setActivePlaylistId(null);
+                        clearSelection();
+                        setSelectedAlbum(null);
+                        setSelectedArtist(null);
+                      }}
+                    >
+                      <Clock3 className="h-4 w-4" />
+                      History
+                    </button>
+
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        activeView === "stats"
+                          ? "bg-sky/30 text-text"
+                          : "text-muted hover:bg-sky/10",
+                      )}
+                      onClick={() => {
+                        setPlaylistReorderMode(false);
+                        setActiveView("stats");
+                        setActivePlaylistId(null);
+                        clearSelection();
+                        setSelectedAlbum(null);
+                        setSelectedArtist(null);
+                      }}
+                    >
+                      <BarChart2 className="h-4 w-4" />
+                      Stats
+                    </button>
                   </div>
 
                   <PlaylistSidebar
@@ -2207,6 +2393,9 @@ function App() {
                     }}
                     onDuplicatePlaylist={(playlist) => {
                       void handleDuplicatePlaylist(playlist);
+                    }}
+                    onExportM3u8={(playlist) => {
+                      void handleExportPlaylistM3u8(playlist);
                     }}
                   />
 
@@ -2252,9 +2441,13 @@ function App() {
                               ? "Albums"
                               : activeView === "artists"
                                 ? "Artists"
-                                : activeView === "settings"
-                                  ? "Settings"
-                                  : (activePlaylist?.name ?? "Playlist")}
+                                : activeView === "history"
+                                  ? "History"
+                                  : activeView === "stats"
+                                    ? "Stats"
+                                    : activeView === "settings"
+                                      ? "Settings"
+                                      : (activePlaylist?.name ?? "Playlist")}
                         </h2>
                         <p className="text-sm text-muted">
                           {activeView === "songs"
@@ -2263,9 +2456,13 @@ function App() {
                               ? `${albums.length.toLocaleString()} albums`
                               : activeView === "artists"
                                 ? `${artists.length.toLocaleString()} artists`
-                                : activeView === "settings"
-                                  ? `${tags.length.toLocaleString()} tags`
-                                  : `${activePlaylistTrackCount.toLocaleString()} songs`}
+                                : activeView === "history"
+                                  ? "Recent plays"
+                                  : activeView === "stats"
+                                    ? "Listening statistics"
+                                    : activeView === "settings"
+                                      ? `${tags.length.toLocaleString()} tags`
+                                      : `${activePlaylistTrackCount.toLocaleString()} songs`}
                         </p>
                       </div>
 
@@ -3072,6 +3269,40 @@ function App() {
                       </div>
                     ) : null}
 
+                    {activeView === "history" ? (
+                      <div className="h-full rounded-xl border border-border bg-white">
+                        <HistoryView
+                          onPlaySong={(songId) => {
+                            const cached = songLookupById.get(songId);
+                            if (cached) {
+                              void playSong(cached).catch((error: unknown) =>
+                                setErrorMessage(String(error)),
+                              );
+                            } else {
+                              void libraryApi
+                                .getSongsByIds([songId])
+                                .then((songs) => {
+                                  if (songs[0]) {
+                                    void playSong(songs[0]).catch((error: unknown) =>
+                                      setErrorMessage(String(error)),
+                                    );
+                                  }
+                                })
+                                .catch((error: unknown) => setErrorMessage(String(error)));
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : null}
+
+                    {activeView === "stats" ? (
+                      <div className="h-full rounded-xl border border-border bg-white p-4">
+                        <div className="h-full overflow-auto">
+                          <StatsView refreshSignal={statsRefreshSignal} />
+                        </div>
+                      </div>
+                    ) : null}
+
                     {activeView === "settings" ? (
                       <div className="h-full rounded-xl border border-border bg-white p-4">
                         <div className="h-full overflow-auto">
@@ -3082,6 +3313,36 @@ function App() {
                             onSetTagColor={handleSetTagColor}
                             onDeleteTag={handleDeleteTag}
                           />
+
+                          <div className="mt-8">
+                            <h3 className="mb-3 text-sm font-semibold">Export</h3>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sky/10"
+                                onClick={() => void handleExportPlayStatsCsv()}
+                              >
+                                <Download className="h-4 w-4" />
+                                Play Stats CSV
+                              </button>
+                              <button
+                                type="button"
+                                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sky/10"
+                                onClick={() => void handleExportTagsCsv()}
+                              >
+                                <Download className="h-4 w-4" />
+                                Tags CSV
+                              </button>
+                              <button
+                                type="button"
+                                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sky/10"
+                                onClick={() => void handleExportHierarchyMd()}
+                              >
+                                <Download className="h-4 w-4" />
+                                Library Hierarchy (Markdown)
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     ) : null}

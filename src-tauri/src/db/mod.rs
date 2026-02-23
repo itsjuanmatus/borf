@@ -15,6 +15,7 @@ const MIGRATION_0002: &str = include_str!("../../migrations/0002_phase2_itunes.s
 const MIGRATION_0003: &str = include_str!("../../migrations/0003_phase3_playlists.sql");
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_itunes_playlist_hierarchy.sql");
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_phase4_metadata_tags_watcher.sql");
+const MIGRATION_0006: &str = include_str!("../../migrations/0006_phase5_play_history.sql");
 
 const LIBRARY_ROOTS_SETTING_KEY: &str = "library_roots";
 
@@ -148,6 +149,113 @@ pub struct PlaylistTrackItem {
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistMutationResult {
     pub affected: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayHistoryEntry {
+    pub id: String,
+    pub song_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub artwork_path: Option<String>,
+    pub started_at: String,
+    pub duration_played_ms: i64,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayHistoryPage {
+    pub entries: Vec<PlayHistoryEntry>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DashboardStats {
+    pub period_days: Option<i64>,
+    pub total_songs: i64,
+    pub total_plays: i64,
+    pub total_listen_ms: i64,
+    pub longest_streak_days: i64,
+    pub top_songs: Vec<TopSongStat>,
+    pub top_artists: Vec<TopArtistStat>,
+    pub top_albums: Vec<TopAlbumStat>,
+    pub genre_breakdown: Vec<GenreStat>,
+    pub listening_by_day: Vec<DayListenStat>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TopSongStat {
+    pub song_id: String,
+    pub title: String,
+    pub artist: String,
+    pub artwork_path: Option<String>,
+    pub play_count: i64,
+    pub total_listen_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TopArtistStat {
+    pub artist: String,
+    pub play_count: i64,
+    pub total_listen_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TopAlbumStat {
+    pub album: String,
+    pub album_artist: String,
+    pub artwork_path: Option<String>,
+    pub play_count: i64,
+    pub total_listen_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GenreStat {
+    pub genre: String,
+    pub play_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DayListenStat {
+    pub date: String,
+    pub total_listen_ms: i64,
+    pub play_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportPlayStatRow {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub play_count: i64,
+    pub total_listen_ms: i64,
+    pub last_played: Option<String>,
+    pub tags: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportTagRow {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportHierarchyPlaylist {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub is_folder: bool,
+    pub sort_order: i64,
+    pub tracks: Vec<ExportHierarchyTrack>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportHierarchyTrack {
+    pub title: String,
+    pub artist: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2281,6 +2389,472 @@ impl Database {
             None => Ok(0.8),
         }
     }
+
+    // ── Play History ─────────────────────────────────────────────
+
+    pub fn history_record_start(&self, id: &str, song_id: &str) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        connection
+            .execute(
+                "INSERT INTO play_history (id, song_id) VALUES (?1, ?2)",
+                params![id, song_id],
+            )
+            .map_err(|error| format!("failed to record play start: {error}"))?;
+
+        Ok(())
+    }
+
+    pub fn history_record_end(
+        &self,
+        id: &str,
+        duration_played_ms: i64,
+        completed: bool,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let completed_int: i64 = if completed { 1 } else { 0 };
+        connection
+            .execute(
+                "
+                UPDATE play_history
+                SET ended_at = CURRENT_TIMESTAMP,
+                    duration_played_ms = ?2,
+                    completed = ?3
+                WHERE id = ?1
+                ",
+                params![id, duration_played_ms, completed_int],
+            )
+            .map_err(|error| format!("failed to record play end: {error}"))?;
+
+        if completed {
+            let song_id: Option<String> = connection
+                .query_row(
+                    "SELECT song_id FROM play_history WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("failed to look up play history song_id: {error}"))?;
+
+            if let Some(song_id) = song_id {
+                connection
+                    .execute(
+                        "
+                        UPDATE songs
+                        SET play_count = play_count + 1,
+                            last_played_at = CURRENT_TIMESTAMP
+                        WHERE id = ?1
+                        ",
+                        params![song_id],
+                    )
+                    .map_err(|error| format!("failed to increment play count: {error}"))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn history_record_skip(&self, song_id: &str) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        connection
+            .execute(
+                "UPDATE songs SET skip_count = skip_count + 1 WHERE id = ?1",
+                params![song_id],
+            )
+            .map_err(|error| format!("failed to increment skip count: {error}"))?;
+
+        Ok(())
+    }
+
+    pub fn history_get_page(&self, limit: i64, offset: i64) -> Result<PlayHistoryPage, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM play_history", [], |row| row.get(0))
+            .map_err(|error| format!("failed to count play history: {error}"))?;
+
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT ph.id, ph.song_id, s.title, s.artist, s.album, s.artwork_path,
+                       ph.started_at, ph.duration_played_ms, ph.completed
+                FROM play_history ph
+                INNER JOIN songs s ON s.id = ph.song_id
+                ORDER BY ph.started_at DESC
+                LIMIT ?1 OFFSET ?2
+                ",
+            )
+            .map_err(|error| format!("failed to prepare play history query: {error}"))?;
+
+        let entries = statement
+            .query_map(params![limit, offset], |row| {
+                Ok(PlayHistoryEntry {
+                    id: row.get(0)?,
+                    song_id: row.get(1)?,
+                    title: row.get(2)?,
+                    artist: row.get(3)?,
+                    album: row.get(4)?,
+                    artwork_path: row.get(5)?,
+                    started_at: row.get(6)?,
+                    duration_played_ms: row.get(7)?,
+                    completed: row.get::<_, i64>(8)? != 0,
+                })
+            })
+            .map_err(|error| format!("failed to query play history: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode play history row: {error}"))?;
+
+        Ok(PlayHistoryPage { entries, total })
+    }
+
+    // ── Stats Dashboard ──────────────────────────────────────────
+
+    pub fn stats_get_dashboard(&self, period_days: Option<i64>) -> Result<DashboardStats, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let date_filter = match period_days {
+            Some(days) => format!("WHERE ph.started_at >= datetime('now', '-{days} days')"),
+            None => String::new(),
+        };
+
+        let totals_query = format!(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(ph.duration_played_ms), 0),
+                    COUNT(DISTINCT ph.song_id)
+             FROM play_history ph {date_filter}"
+        );
+        let (total_plays, total_listen_ms, total_songs): (i64, i64, i64) = connection
+            .query_row(&totals_query, [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|error| format!("failed to query total stats: {error}"))?;
+
+        let top_songs_query = format!(
+            "SELECT ph.song_id, s.title, s.artist, s.artwork_path,
+                    COUNT(*) as pc, COALESCE(SUM(ph.duration_played_ms), 0) as tlms
+             FROM play_history ph
+             INNER JOIN songs s ON s.id = ph.song_id
+             {date_filter}
+             GROUP BY ph.song_id
+             ORDER BY pc DESC
+             LIMIT 10"
+        );
+        let mut stmt = connection
+            .prepare(&top_songs_query)
+            .map_err(|error| format!("failed to prepare top songs query: {error}"))?;
+        let top_songs = stmt
+            .query_map([], |row| {
+                Ok(TopSongStat {
+                    song_id: row.get(0)?,
+                    title: row.get(1)?,
+                    artist: row.get(2)?,
+                    artwork_path: row.get(3)?,
+                    play_count: row.get(4)?,
+                    total_listen_ms: row.get(5)?,
+                })
+            })
+            .map_err(|error| format!("failed to query top songs: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode top song row: {error}"))?;
+
+        let top_artists_query = format!(
+            "SELECT s.artist, COUNT(*) as pc, COALESCE(SUM(ph.duration_played_ms), 0) as tlms
+             FROM play_history ph
+             INNER JOIN songs s ON s.id = ph.song_id
+             {date_filter}
+             GROUP BY s.artist
+             ORDER BY pc DESC
+             LIMIT 10"
+        );
+        let mut stmt = connection
+            .prepare(&top_artists_query)
+            .map_err(|error| format!("failed to prepare top artists query: {error}"))?;
+        let top_artists = stmt
+            .query_map([], |row| {
+                Ok(TopArtistStat {
+                    artist: row.get(0)?,
+                    play_count: row.get(1)?,
+                    total_listen_ms: row.get(2)?,
+                })
+            })
+            .map_err(|error| format!("failed to query top artists: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode top artist row: {error}"))?;
+
+        let top_albums_query = format!(
+            "SELECT s.album, COALESCE(s.album_artist, s.artist), s.artwork_path,
+                    COUNT(*) as pc, COALESCE(SUM(ph.duration_played_ms), 0) as tlms
+             FROM play_history ph
+             INNER JOIN songs s ON s.id = ph.song_id
+             {date_filter}
+             GROUP BY s.album, COALESCE(s.album_artist, s.artist)
+             ORDER BY pc DESC
+             LIMIT 10"
+        );
+        let mut stmt = connection
+            .prepare(&top_albums_query)
+            .map_err(|error| format!("failed to prepare top albums query: {error}"))?;
+        let top_albums = stmt
+            .query_map([], |row| {
+                Ok(TopAlbumStat {
+                    album: row.get(0)?,
+                    album_artist: row.get(1)?,
+                    artwork_path: row.get(2)?,
+                    play_count: row.get(3)?,
+                    total_listen_ms: row.get(4)?,
+                })
+            })
+            .map_err(|error| format!("failed to query top albums: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode top album row: {error}"))?;
+
+        let genre_query = format!(
+            "SELECT COALESCE(s.genre, 'Unknown'), COUNT(*) as pc
+             FROM play_history ph
+             INNER JOIN songs s ON s.id = ph.song_id
+             {date_filter}
+             GROUP BY s.genre
+             ORDER BY pc DESC"
+        );
+        let mut stmt = connection
+            .prepare(&genre_query)
+            .map_err(|error| format!("failed to prepare genre query: {error}"))?;
+        let genre_breakdown = stmt
+            .query_map([], |row| {
+                Ok(GenreStat {
+                    genre: row.get(0)?,
+                    play_count: row.get(1)?,
+                })
+            })
+            .map_err(|error| format!("failed to query genre breakdown: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode genre row: {error}"))?;
+
+        let daily_query = format!(
+            "SELECT date(ph.started_at) as d,
+                    COALESCE(SUM(ph.duration_played_ms), 0),
+                    COUNT(*)
+             FROM play_history ph
+             {date_filter}
+             GROUP BY d
+             ORDER BY d ASC"
+        );
+        let mut stmt = connection
+            .prepare(&daily_query)
+            .map_err(|error| format!("failed to prepare daily stats query: {error}"))?;
+        let listening_by_day = stmt
+            .query_map([], |row| {
+                Ok(DayListenStat {
+                    date: row.get(0)?,
+                    total_listen_ms: row.get(1)?,
+                    play_count: row.get(2)?,
+                })
+            })
+            .map_err(|error| format!("failed to query daily stats: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode daily stat row: {error}"))?;
+
+        let longest_streak_days = compute_longest_listening_streak(&listening_by_day);
+
+        Ok(DashboardStats {
+            period_days,
+            total_songs,
+            total_plays,
+            total_listen_ms,
+            longest_streak_days,
+            top_songs,
+            top_artists,
+            top_albums,
+            genre_breakdown,
+            listening_by_day,
+        })
+    }
+
+    // ── Export Queries ────────────────────────────────────────────
+
+    pub fn export_play_stats_rows(&self) -> Result<Vec<ExportPlayStatRow>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT s.title, s.artist, s.album, s.play_count,
+                       COALESCE((SELECT SUM(ph.duration_played_ms)
+                                 FROM play_history ph WHERE ph.song_id = s.id), 0),
+                       s.last_played_at,
+                       COALESCE((SELECT GROUP_CONCAT(t.name, ', ')
+                                 FROM song_tags st
+                                 INNER JOIN tags t ON t.id = st.tag_id
+                                 WHERE st.song_id = s.id), '')
+                FROM songs s
+                WHERE s.is_missing = 0
+                ORDER BY s.title COLLATE NOCASE ASC
+                ",
+            )
+            .map_err(|error| format!("failed to prepare export play stats query: {error}"))?;
+
+        let rows = statement
+            .query_map([], |row| {
+                Ok(ExportPlayStatRow {
+                    title: row.get(0)?,
+                    artist: row.get(1)?,
+                    album: row.get(2)?,
+                    play_count: row.get(3)?,
+                    total_listen_ms: row.get(4)?,
+                    last_played: row.get(5)?,
+                    tags: row.get(6)?,
+                })
+            })
+            .map_err(|error| format!("failed to query export play stats: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode export play stat row: {error}"))?;
+
+        Ok(rows)
+    }
+
+    pub fn export_tags_rows(&self) -> Result<Vec<ExportTagRow>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT s.id, s.title, s.artist, s.album
+                FROM songs s
+                WHERE s.is_missing = 0
+                ORDER BY s.title COLLATE NOCASE ASC
+                ",
+            )
+            .map_err(|error| format!("failed to prepare export tags query: {error}"))?;
+
+        let song_rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| format!("failed to query export songs: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode export songs row: {error}"))?;
+
+        let mut tag_stmt = connection
+            .prepare(
+                "
+                SELECT t.name
+                FROM song_tags st
+                INNER JOIN tags t ON t.id = st.tag_id
+                WHERE st.song_id = ?1
+                ORDER BY t.name COLLATE NOCASE ASC
+                ",
+            )
+            .map_err(|error| format!("failed to prepare tag lookup: {error}"))?;
+
+        let mut rows = Vec::with_capacity(song_rows.len());
+        for (id, title, artist, album) in song_rows {
+            let song_tags: Vec<String> = tag_stmt
+                .query_map(params![id], |row| row.get(0))
+                .map_err(|error| format!("failed to query song tags for export: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("failed to decode tag row: {error}"))?;
+
+            rows.push(ExportTagRow {
+                title,
+                artist,
+                album,
+                tags: song_tags,
+            });
+        }
+
+        Ok(rows)
+    }
+
+    pub fn export_hierarchy_data(&self) -> Result<Vec<ExportHierarchyPlaylist>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let mut playlist_stmt = connection
+            .prepare(
+                "
+                SELECT id, name, parent_id, is_folder, sort_order
+                FROM playlists
+                ORDER BY sort_order ASC
+                ",
+            )
+            .map_err(|error| format!("failed to prepare hierarchy playlist query: {error}"))?;
+
+        let playlists = playlist_stmt
+            .query_map([], |row| {
+                Ok(ExportHierarchyPlaylist {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    is_folder: row.get::<_, i64>(3)? != 0,
+                    sort_order: row.get(4)?,
+                    tracks: Vec::new(),
+                })
+            })
+            .map_err(|error| format!("failed to query hierarchy playlists: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to decode hierarchy playlist row: {error}"))?;
+
+        let mut track_stmt = connection
+            .prepare(
+                "
+                SELECT s.title, s.artist
+                FROM playlist_tracks pt
+                INNER JOIN songs s ON s.id = pt.song_id
+                WHERE pt.playlist_id = ?1
+                ORDER BY pt.position ASC
+                ",
+            )
+            .map_err(|error| format!("failed to prepare hierarchy track query: {error}"))?;
+
+        let mut result = Vec::with_capacity(playlists.len());
+        for mut playlist in playlists {
+            if !playlist.is_folder {
+                let tracks = track_stmt
+                    .query_map(params![playlist.id], |row| {
+                        Ok(ExportHierarchyTrack {
+                            title: row.get(0)?,
+                            artist: row.get(1)?,
+                        })
+                    })
+                    .map_err(|error| format!("failed to query hierarchy tracks: {error}"))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("failed to decode hierarchy track row: {error}"))?;
+                playlist.tracks = tracks;
+            }
+            result.push(playlist);
+        }
+
+        Ok(result)
+    }
 }
 
 fn apply_itunes_playlist_import_entry(
@@ -2847,6 +3421,47 @@ fn get_tag_by_id(connection: &Connection, tag_id: &str) -> Result<Tag, String> {
         .map_err(|error| format!("failed to load tag {tag_id}: {error}"))
 }
 
+fn compute_longest_listening_streak(daily_data: &[DayListenStat]) -> i64 {
+    let mut dates = daily_data
+        .iter()
+        .filter_map(|entry| chrono::NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d").ok())
+        .collect::<Vec<_>>();
+
+    if dates.is_empty() {
+        return 0;
+    }
+
+    dates.sort_unstable();
+    dates.dedup();
+
+    let mut longest = 1_i64;
+    let mut current = 1_i64;
+
+    for pair in dates.windows(2) {
+        let gap_days = pair[1].signed_duration_since(pair[0]).num_days();
+        if gap_days == 1 {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 1;
+        }
+    }
+
+    longest
+}
+
+pub fn escape_csv(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn max_export_tag_columns(rows: &[ExportTagRow]) -> usize {
+    rows.iter().map(|row| row.tags.len()).max().unwrap_or(0)
+}
+
 fn normalize_tag_name(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -3102,12 +3717,26 @@ fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
         connection.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])?;
     }
 
+    let migration_6_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !migration_6_applied {
+        connection.execute_batch(MIGRATION_0006)?;
+        connection.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])?;
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_fts_query, run_migrations, Database};
+    use super::{
+        build_fts_query, compute_longest_listening_streak, max_export_tag_columns, DayListenStat,
+        Database, ExportTagRow, run_migrations,
+    };
     use rusqlite::{params, Connection};
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -3186,6 +3815,15 @@ mod tests {
             )
             .expect("failed to check migration 5");
         assert_eq!(migration_5_applied, 1);
+
+        let migration_6_applied: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 6",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check migration 6");
+        assert_eq!(migration_6_applied, 1);
     }
 
     #[test]
@@ -3262,6 +3900,112 @@ mod tests {
             .get_artists(10, 0, "name", "asc")
             .expect("failed to query artists");
         assert_eq!(artists.len(), 2);
+    }
+
+    #[test]
+    fn computes_longest_listening_streak_from_daily_data() {
+        let streak = compute_longest_listening_streak(&[
+            DayListenStat {
+                date: String::from("2026-02-01"),
+                total_listen_ms: 60_000,
+                play_count: 1,
+            },
+            DayListenStat {
+                date: String::from("2026-02-02"),
+                total_listen_ms: 60_000,
+                play_count: 1,
+            },
+            DayListenStat {
+                date: String::from("2026-02-04"),
+                total_listen_ms: 60_000,
+                play_count: 1,
+            },
+            DayListenStat {
+                date: String::from("2026-02-05"),
+                total_listen_ms: 60_000,
+                play_count: 1,
+            },
+            DayListenStat {
+                date: String::from("2026-02-06"),
+                total_listen_ms: 60_000,
+                play_count: 1,
+            },
+        ]);
+
+        assert_eq!(streak, 3);
+    }
+
+    #[test]
+    fn dashboard_stats_apply_period_to_total_songs_and_longest_streak() {
+        let db = test_db();
+        seed_song(&db, "song-1", "Song 1");
+        seed_song(&db, "song-2", "Song 2");
+        seed_song(&db, "song-3", "Song 3");
+
+        {
+            let connection = db.connection.lock().expect("failed to lock db");
+            let samples = [
+                ("h-1", "song-1", "-3 days"),
+                ("h-2", "song-1", "-2 days"),
+                ("h-3", "song-2", "-1 days"),
+                ("h-4", "song-3", "-40 days"),
+                ("h-5", "song-3", "-39 days"),
+                ("h-6", "song-3", "-38 days"),
+                ("h-7", "song-3", "-37 days"),
+            ];
+
+            for (id, song_id, offset) in samples {
+                connection
+                    .execute(
+                        "
+                        INSERT INTO play_history (id, song_id, started_at, duration_played_ms, completed)
+                        VALUES (?1, ?2, datetime('now', ?3), 120000, 1)
+                        ",
+                        params![id, song_id, offset],
+                    )
+                    .expect("failed to insert play history sample");
+            }
+        }
+
+        let period_stats = db
+            .stats_get_dashboard(Some(7))
+            .expect("failed to fetch 7-day dashboard stats");
+        assert_eq!(period_stats.total_plays, 3);
+        assert_eq!(period_stats.total_songs, 2);
+        assert_eq!(period_stats.longest_streak_days, 3);
+
+        let all_time_stats = db
+            .stats_get_dashboard(None)
+            .expect("failed to fetch all-time dashboard stats");
+        assert_eq!(all_time_stats.total_songs, 3);
+        assert_eq!(all_time_stats.longest_streak_days, 4);
+    }
+
+    #[test]
+    fn computes_max_export_tag_columns() {
+        let empty_rows: Vec<ExportTagRow> = Vec::new();
+        assert_eq!(max_export_tag_columns(&empty_rows), 0);
+
+        let rows = vec![
+            ExportTagRow {
+                title: String::from("Song 1"),
+                artist: String::from("Artist"),
+                album: String::from("Album"),
+                tags: vec![String::from("Tag A")],
+            },
+            ExportTagRow {
+                title: String::from("Song 2"),
+                artist: String::from("Artist"),
+                album: String::from("Album"),
+                tags: vec![
+                    String::from("Tag A"),
+                    String::from("Tag B"),
+                    String::from("Tag C"),
+                ],
+            },
+        ];
+
+        assert_eq!(max_export_tag_columns(&rows), 3);
     }
 
     #[test]

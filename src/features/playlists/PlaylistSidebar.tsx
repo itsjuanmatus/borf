@@ -14,6 +14,7 @@ interface PlaylistSidebarProps {
   onRenamePlaylist: (playlist: PlaylistNode) => void;
   onDeletePlaylist: (playlist: PlaylistNode) => void;
   onDuplicatePlaylist: (playlist: PlaylistNode) => void;
+  onExportM3u8?: (playlist: PlaylistNode) => void;
 }
 
 export function PlaylistSidebar({
@@ -25,6 +26,7 @@ export function PlaylistSidebar({
   onRenamePlaylist,
   onDeletePlaylist,
   onDuplicatePlaylist,
+  onExportM3u8,
 }: PlaylistSidebarProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -108,6 +110,7 @@ export function PlaylistSidebar({
             onRename={onRenamePlaylist}
             onDelete={onDeletePlaylist}
             onDuplicate={onDuplicatePlaylist}
+            onExportM3u8={onExportM3u8}
           />
         </div>
       ) : null}

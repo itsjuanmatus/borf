@@ -22,6 +22,7 @@ plist = "1.8"
 rayon = "1.11"
 rodio = { version = "0.20", features = ["symphonia-all"] }
 rusqlite = { version = "0.38.0", features = ["bundled", "chrono"] }
+souvlaki = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 symphonia = { version = "0.5", features = ["all"] }
