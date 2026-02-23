@@ -1,5 +1,8 @@
 use crate::audio::AudioEngine;
-use crate::db::{AlbumListItem, ArtistListItem, LibrarySearchResult, SongListItem};
+use crate::db::{
+    AlbumListItem, ArtistListItem, LibrarySearchResult, PlaylistMutationResult, PlaylistNode,
+    PlaylistTrackItem, SongListItem,
+};
 use crate::imports::itunes::{self, ItunesImportOptions, ItunesImportSummary, ItunesPreview};
 use crate::library;
 use crate::state::AppState;
@@ -90,6 +93,92 @@ pub fn library_search(
     limit: Option<u32>,
 ) -> Result<LibrarySearchResult, String> {
     state.db.search_library(&query, limit.unwrap_or(25))
+}
+
+#[tauri::command]
+pub fn playlist_list(state: State<'_, AppState>) -> Result<Vec<PlaylistNode>, String> {
+    state.db.playlist_list()
+}
+
+#[tauri::command]
+pub fn playlist_create(
+    state: State<'_, AppState>,
+    name: String,
+    parent_id: Option<String>,
+    is_folder: bool,
+) -> Result<PlaylistNode, String> {
+    state.db.playlist_create(&name, parent_id.as_deref(), is_folder)
+}
+
+#[tauri::command]
+pub fn playlist_rename(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<PlaylistNode, String> {
+    state.db.playlist_rename(&id, &name)
+}
+
+#[tauri::command]
+pub fn playlist_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.db.playlist_delete(&id)
+}
+
+#[tauri::command]
+pub fn playlist_duplicate(state: State<'_, AppState>, id: String) -> Result<PlaylistNode, String> {
+    state.db.playlist_duplicate(&id)
+}
+
+#[tauri::command]
+pub fn playlist_move(
+    state: State<'_, AppState>,
+    id: String,
+    new_parent_id: Option<String>,
+    new_index: i64,
+) -> Result<(), String> {
+    state
+        .db
+        .playlist_move(&id, new_parent_id.as_deref(), new_index)
+}
+
+#[tauri::command]
+pub fn playlist_get_tracks(
+    state: State<'_, AppState>,
+    playlist_id: String,
+) -> Result<Vec<PlaylistTrackItem>, String> {
+    state.db.playlist_get_tracks(&playlist_id)
+}
+
+#[tauri::command]
+pub fn playlist_add_songs(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    song_ids: Vec<String>,
+    insert_index: Option<i64>,
+) -> Result<PlaylistMutationResult, String> {
+    state
+        .db
+        .playlist_add_songs(&playlist_id, &song_ids, insert_index)
+}
+
+#[tauri::command]
+pub fn playlist_remove_songs(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    song_ids: Vec<String>,
+) -> Result<PlaylistMutationResult, String> {
+    state.db.playlist_remove_songs(&playlist_id, &song_ids)
+}
+
+#[tauri::command]
+pub fn playlist_reorder_tracks(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    ordered_song_ids: Vec<String>,
+) -> Result<(), String> {
+    state
+        .db
+        .playlist_reorder_tracks(&playlist_id, &ordered_song_ids)
 }
 
 #[tauri::command]

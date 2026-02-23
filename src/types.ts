@@ -9,7 +9,8 @@ export type SongSortField =
 export type AlbumSortField = "name" | "artist" | "year" | "date_added";
 export type ArtistSortField = "name" | "play_count";
 export type SortOrder = "asc" | "desc";
-export type LibraryView = "songs" | "albums" | "artists";
+export type LibraryView = "songs" | "albums" | "artists" | "playlist";
+export type RepeatMode = "off" | "all" | "one";
 
 export type PlaybackState = "playing" | "paused" | "stopped";
 
@@ -53,7 +54,40 @@ export interface LibrarySearchResult {
 export interface QueueState {
   songIds: string[];
   currentIndex: number | null;
-  repeatAll: boolean;
+  repeatMode: RepeatMode;
+}
+
+export interface PlaylistNode {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  is_folder: boolean;
+  sort_order: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PlaylistTrackItem {
+  playlist_id: string;
+  position: number;
+  song: SongListItem;
+}
+
+export interface PlaylistMutationResult {
+  affected: number;
+}
+
+export interface DragSongPayload {
+  type: "song";
+  songIds: string[];
+  source: "library" | "search" | "playlist" | "queue";
+  fromPlaylistId?: string;
+}
+
+export interface DragPlaylistPayload {
+  type: "playlist-node";
+  playlistId: string;
+  isFolder: boolean;
 }
 
 export interface ScanProgressEvent {

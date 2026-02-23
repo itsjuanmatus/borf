@@ -80,7 +80,11 @@ struct ParsedTrack {
 
 #[derive(Debug, Clone)]
 struct ParsedPlaylist {
+    external_id: String,
+    parent_external_id: Option<String>,
     name: String,
+    is_folder: bool,
+    sort_order: i64,
     is_smart: bool,
     is_system: bool,
     track_ids: Vec<i64>,
@@ -227,14 +231,20 @@ pub fn run_itunes_import(
 
             playlists_found += 1;
             let mut matched_song_ids = Vec::new();
-            for track_id in &playlist.track_ids {
-                if let Some(song_id) = matched_track_ids_by_itunes_track_id.get(track_id) {
-                    matched_song_ids.push(song_id.clone());
+            if !playlist.is_folder {
+                for track_id in &playlist.track_ids {
+                    if let Some(song_id) = matched_track_ids_by_itunes_track_id.get(track_id) {
+                        matched_song_ids.push(song_id.clone());
+                    }
                 }
             }
 
             playlist_imports.push(PlaylistImportData {
+                external_id: playlist.external_id.clone(),
+                parent_external_id: playlist.parent_external_id.clone(),
                 name: playlist.name.clone(),
+                is_folder: playlist.is_folder,
+                sort_order: playlist.sort_order,
                 song_ids: matched_song_ids,
             });
 
@@ -427,22 +437,45 @@ fn parse_itunes_library(xml_path: &Path) -> Result<ParsedLibrary, String> {
 fn parse_playlists(values: &[Value]) -> Vec<ParsedPlaylist> {
     let mut playlists = Vec::new();
 
-    for value in values {
+    for (index, value) in values.iter().enumerate() {
         let Some(dictionary) = value.as_dictionary() else {
             continue;
         };
 
         let name = normalize_string(dictionary.get("Name").and_then(Value::as_string), "Unnamed Playlist");
+        let is_folder = dictionary
+            .get("Folder")
+            .and_then(Value::as_boolean)
+            .unwrap_or(false);
         let is_smart = dictionary.get("Smart Info").is_some();
         let is_system = dictionary
             .get("Master")
             .and_then(Value::as_boolean)
             .unwrap_or(false)
-            || dictionary.contains_key("Distinguished Kind")
-            || dictionary
-                .get("Folder")
-                .and_then(Value::as_boolean)
-                .unwrap_or(false);
+            || dictionary.contains_key("Distinguished Kind");
+
+        let external_id = dictionary
+            .get("Playlist Persistent ID")
+            .and_then(Value::as_string)
+            .map(str::to_string)
+            .or_else(|| {
+                dictionary
+                    .get("Playlist ID")
+                    .and_then(value_as_i64)
+                    .map(|value| value.to_string())
+            })
+            .unwrap_or_else(|| format!("generated-playlist-{index}"));
+
+        let parent_external_id = dictionary
+            .get("Parent Persistent ID")
+            .and_then(Value::as_string)
+            .map(str::to_string)
+            .or_else(|| {
+                dictionary
+                    .get("Parent Playlist ID")
+                    .and_then(value_as_i64)
+                    .map(|value| value.to_string())
+            });
 
         let mut track_ids = Vec::new();
         if let Some(items) = dictionary.get("Playlist Items").and_then(Value::as_array) {
@@ -457,7 +490,11 @@ fn parse_playlists(values: &[Value]) -> Vec<ParsedPlaylist> {
         }
 
         playlists.push(ParsedPlaylist {
+            external_id,
+            parent_external_id,
             name,
+            is_folder,
+            sort_order: index as i64,
             is_smart,
             is_system,
             track_ids,
@@ -710,5 +747,36 @@ mod tests {
         assert!(!playlists[0].is_system);
         assert!(!playlists[1].is_smart);
         assert!(playlists[1].is_system);
+    }
+
+    #[test]
+    fn parses_folder_hierarchy_metadata() {
+        let mut folder = Dictionary::new();
+        folder.insert(String::from("Name"), Value::String(String::from("Chill")));
+        folder.insert(String::from("Folder"), Value::Boolean(true));
+        folder.insert(
+            String::from("Playlist Persistent ID"),
+            Value::String(String::from("FOLDER-1")),
+        );
+
+        let mut child_playlist = Dictionary::new();
+        child_playlist.insert(String::from("Name"), Value::String(String::from("Rain")));
+        child_playlist.insert(
+            String::from("Playlist Persistent ID"),
+            Value::String(String::from("PLAYLIST-1")),
+        );
+        child_playlist.insert(
+            String::from("Parent Persistent ID"),
+            Value::String(String::from("FOLDER-1")),
+        );
+
+        let playlists = parse_playlists(&[Value::Dictionary(folder), Value::Dictionary(child_playlist)]);
+
+        assert_eq!(playlists.len(), 2);
+        assert!(playlists[0].is_folder);
+        assert!(!playlists[0].is_system);
+        assert_eq!(playlists[0].external_id, "FOLDER-1");
+        assert_eq!(playlists[1].parent_external_id.as_deref(), Some("FOLDER-1"));
+        assert_eq!(playlists[1].external_id, "PLAYLIST-1");
     }
 }

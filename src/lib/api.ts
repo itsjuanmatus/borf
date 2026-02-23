@@ -8,6 +8,9 @@ import type {
   ItunesImportSummary,
   ItunesPreview,
   LibrarySearchResult,
+  PlaylistMutationResult,
+  PlaylistNode,
+  PlaylistTrackItem,
   SongListItem,
   SongSortField,
   SortOrder,
@@ -64,5 +67,50 @@ export const audioApi = {
   },
   setVolume(volume: number) {
     return invoke<void>("audio_set_volume", { volume });
+  },
+};
+
+export const playlistApi = {
+  list() {
+    return invoke<PlaylistNode[]>("playlist_list");
+  },
+  create(params: { name: string; parentId?: string | null; isFolder: boolean }) {
+    return invoke<PlaylistNode>("playlist_create", {
+      name: params.name,
+      parentId: params.parentId ?? null,
+      isFolder: params.isFolder,
+    });
+  },
+  rename(id: string, name: string) {
+    return invoke<PlaylistNode>("playlist_rename", { id, name });
+  },
+  delete(id: string) {
+    return invoke<void>("playlist_delete", { id });
+  },
+  duplicate(id: string) {
+    return invoke<PlaylistNode>("playlist_duplicate", { id });
+  },
+  move(params: { id: string; newParentId?: string | null; newIndex: number }) {
+    return invoke<void>("playlist_move", {
+      id: params.id,
+      newParentId: params.newParentId ?? null,
+      newIndex: params.newIndex,
+    });
+  },
+  getTracks(playlistId: string) {
+    return invoke<PlaylistTrackItem[]>("playlist_get_tracks", { playlistId });
+  },
+  addSongs(params: { playlistId: string; songIds: string[]; insertIndex?: number | null }) {
+    return invoke<PlaylistMutationResult>("playlist_add_songs", {
+      playlistId: params.playlistId,
+      songIds: params.songIds,
+      insertIndex: params.insertIndex ?? null,
+    });
+  },
+  removeSongs(playlistId: string, songIds: string[]) {
+    return invoke<PlaylistMutationResult>("playlist_remove_songs", { playlistId, songIds });
+  },
+  reorderTracks(playlistId: string, orderedSongIds: string[]) {
+    return invoke<void>("playlist_reorder_tracks", { playlistId, orderedSongIds });
   },
 };
