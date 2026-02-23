@@ -89,6 +89,9 @@ pub fn run() {
             commands::playlist_duplicate,
             commands::playlist_move,
             commands::playlist_get_tracks,
+            commands::playlist_get_track_count,
+            commands::playlist_get_tracks_page,
+            commands::playlist_get_track_ids,
             commands::playlist_add_songs,
             commands::playlist_remove_songs,
             commands::playlist_reorder_tracks,
@@ -99,6 +102,7 @@ pub fn run() {
             commands::audio_resume,
             commands::audio_seek,
             commands::audio_set_volume,
+            commands::audio_clear_decoded_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

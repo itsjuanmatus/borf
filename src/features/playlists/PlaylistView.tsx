@@ -1,18 +1,27 @@
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Clock3, ListMusic, Plus, Trash2 } from "lucide-react";
-import type { MouseEvent } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { Clock3, GripVertical, ListMusic, Plus, Trash2 } from "lucide-react";
+import { type MouseEvent, useEffect, useRef } from "react";
 import { SongArtwork } from "../../components/song-artwork";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import type { DragSongPayload, PlaylistNode, PlaylistTrackItem } from "../../types";
 
+const TRACK_ROW_HEIGHT = 54;
+
 interface PlaylistViewProps {
   playlist: PlaylistNode | null;
-  tracks: PlaylistTrackItem[];
+  tracks: Array<PlaylistTrackItem | undefined>;
+  trackCount: number;
   currentSongId: string | null;
   selectedSongIds: string[];
+  selectedSongIdSet: Set<string>;
+  isReorderMode: boolean;
+  canReorder: boolean;
+  onToggleReorderMode: () => void;
+  onRequestTrackRange?: (startIndex: number, endIndex: number) => void;
   onSelectTrack: (
     songId: string,
     index: number,
@@ -29,7 +38,9 @@ interface TrackRowProps {
   track: PlaylistTrackItem;
   index: number;
   selectedSongIds: string[];
+  selectedSongIdSet: Set<string>;
   currentSongId: string | null;
+  reorderEnabled: boolean;
   onSelectTrack: (
     songId: string,
     index: number,
@@ -55,13 +66,15 @@ function TrackRow({
   track,
   index,
   selectedSongIds,
+  selectedSongIdSet,
   currentSongId,
+  reorderEnabled,
   onSelectTrack,
   onPlayTrack,
   onAddToQueue,
   onTrackContextMenu,
 }: TrackRowProps) {
-  const selected = selectedSongIds.includes(track.song.id);
+  const selected = selectedSongIdSet.has(track.song.id);
   const payload: DragSongPayload = {
     type: "song",
     songIds: selected ? selectedSongIds : [track.song.id],
@@ -72,6 +85,7 @@ function TrackRow({
   const sortable = useSortable({
     id: `playlist-track:${track.song.id}`,
     data: payload,
+    disabled: !reorderEnabled,
   });
 
   return (
@@ -84,10 +98,10 @@ function TrackRow({
     >
       <button
         type="button"
-        {...sortable.attributes}
-        {...sortable.listeners}
+        {...(reorderEnabled ? sortable.attributes : {})}
+        {...(reorderEnabled ? sortable.listeners : {})}
         className={cn(
-          "group/song grid w-full select-none grid-cols-[36px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 py-2 text-left text-sm",
+          "group/song grid w-full select-none grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 py-2 text-left text-sm",
           "hover:bg-sky/15",
           selected && "bg-sky/20",
           currentSongId === track.song.id && "bg-blossom/25",
@@ -101,7 +115,10 @@ function TrackRow({
         onDoubleClick={() => onPlayTrack(index)}
         onContextMenu={(event) => onTrackContextMenu(event, track.song.id, index)}
       >
-        <span className="text-xs text-muted">{index + 1}</span>
+        <span className="flex items-center gap-1 text-xs text-muted">
+          {reorderEnabled ? <GripVertical className="h-3.5 w-3.5" /> : null}
+          {index + 1}
+        </span>
         <div className="flex min-w-0 items-center gap-2">
           <SongArtwork
             artworkPath={track.song.artwork_path}
@@ -154,8 +171,14 @@ function TrackRow({
 export function PlaylistView({
   playlist,
   tracks,
+  trackCount,
   currentSongId,
   selectedSongIds,
+  selectedSongIdSet,
+  isReorderMode,
+  canReorder,
+  onToggleReorderMode,
+  onRequestTrackRange,
   onSelectTrack,
   onPlayTrack,
   onAddToQueue,
@@ -165,6 +188,25 @@ export function PlaylistView({
   const droppable = useDroppable({
     id: playlist ? `playlist-tracks-drop:${playlist.id}` : "playlist-tracks-drop:none",
   });
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const virtualizer = useVirtualizer({
+    count: trackCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => TRACK_ROW_HEIGHT,
+    overscan: 16,
+  });
+  const virtualItems = virtualizer.getVirtualItems();
+
+  const firstVisibleIndex = virtualItems[0]?.index ?? 0;
+  const lastVisibleIndex = virtualItems[virtualItems.length - 1]?.index ?? 0;
+
+  useEffect(() => {
+    if (!onRequestTrackRange || trackCount === 0) {
+      return;
+    }
+    onRequestTrackRange(firstVisibleIndex, lastVisibleIndex);
+  }, [firstVisibleIndex, lastVisibleIndex, onRequestTrackRange, trackCount]);
 
   if (!playlist) {
     return (
@@ -173,6 +215,66 @@ export function PlaylistView({
       </div>
     );
   }
+
+  const content = (
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: "relative",
+        }}
+      >
+        {virtualItems.map((virtualRow) => {
+          const track = tracks[virtualRow.index];
+
+          return (
+            <div
+              key={virtualRow.key}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: `${virtualRow.size}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              {track ? (
+                <TrackRow
+                  playlistId={playlist.id}
+                  track={track}
+                  index={virtualRow.index}
+                  selectedSongIds={selectedSongIds}
+                  selectedSongIdSet={selectedSongIdSet}
+                  currentSongId={currentSongId}
+                  reorderEnabled={isReorderMode && canReorder}
+                  onSelectTrack={onSelectTrack}
+                  onPlayTrack={onPlayTrack}
+                  onAddToQueue={onAddToQueue}
+                  onTrackContextMenu={onTrackContextMenu}
+                />
+              ) : (
+                <div className="grid h-full w-full grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 text-sm text-muted">
+                  <span>{virtualRow.index + 1}</span>
+                  <span>Loading...</span>
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {trackCount === 0 ? (
+          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted">
+            <ListMusic className="h-4 w-4" />
+            Drop songs here or use paste.
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <div
@@ -185,9 +287,12 @@ export function PlaylistView({
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div className="min-w-0">
           <h3 className="truncate text-base font-semibold">{playlist.name}</h3>
-          <p className="text-xs text-muted">{tracks.length.toLocaleString()} songs</p>
+          <p className="text-xs text-muted">{trackCount.toLocaleString()} songs</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button type="button" variant="secondary" size="sm" onClick={onToggleReorderMode}>
+            {isReorderMode ? "Done" : "Edit Order"}
+          </Button>
           <Button
             type="button"
             variant="secondary"
@@ -201,7 +306,7 @@ export function PlaylistView({
         </div>
       </header>
 
-      <div className="grid grid-cols-[36px_2fr_1.3fr_110px_46px] gap-3 border-b border-border bg-surface px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
+      <div className="grid grid-cols-[32px_2fr_1.3fr_110px_46px] gap-3 border-b border-border bg-surface px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
         <span>#</span>
         <span>Title</span>
         <span>Artist</span>
@@ -209,34 +314,24 @@ export function PlaylistView({
         <span />
       </div>
 
-      <SortableContext
-        items={tracks.map((track) => `playlist-track:${track.song.id}`)}
-        strategy={verticalListSortingStrategy}
-      >
-        <div className="min-h-0 flex-1 overflow-auto">
-          {tracks.length === 0 ? (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted">
-              <ListMusic className="h-4 w-4" />
-              Drop songs here or use paste.
-            </div>
-          ) : (
-            tracks.map((track, index) => (
-              <TrackRow
-                key={track.song.id}
-                playlistId={playlist.id}
-                track={track}
-                index={index}
-                selectedSongIds={selectedSongIds}
-                currentSongId={currentSongId}
-                onSelectTrack={onSelectTrack}
-                onPlayTrack={onPlayTrack}
-                onAddToQueue={onAddToQueue}
-                onTrackContextMenu={onTrackContextMenu}
-              />
-            ))
-          )}
+      {isReorderMode && canReorder ? (
+        <SortableContext
+          items={tracks
+            .filter((track): track is PlaylistTrackItem => Boolean(track))
+            .map((track) => `playlist-track:${track.song.id}`)}
+          strategy={verticalListSortingStrategy}
+        >
+          {content}
+        </SortableContext>
+      ) : (
+        content
+      )}
+
+      {isReorderMode && !canReorder ? (
+        <div className="border-t border-border px-3 py-2 text-xs text-muted">
+          Loading full playlist before reordering...
         </div>
-      </SortableContext>
+      ) : null}
     </div>
   );
 }

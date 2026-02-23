@@ -3,12 +3,13 @@ import type { SongListItem } from "../types";
 
 interface QueueState {
   upNext: SongListItem[];
-  playingFrom: SongListItem[];
+  playingFromSource: SongListItem[];
+  playingFromIndex: number;
   playingFromLabel: string | null;
   isOpen: boolean;
   open: () => void;
   close: () => void;
-  setPlayingFrom: (songs: SongListItem[], label: string | null) => void;
+  setPlayingFrom: (songs: SongListItem[], label: string | null, startIndex?: number) => void;
   enqueueSongs: (songs: SongListItem[]) => void;
   reorderUpNext: (songIds: string[]) => void;
   removeFromUpNext: (songId: string) => void;
@@ -18,12 +19,18 @@ interface QueueState {
 
 export const useQueueStore = create<QueueState>((set, get) => ({
   upNext: [],
-  playingFrom: [],
+  playingFromSource: [],
+  playingFromIndex: 0,
   playingFromLabel: null,
   isOpen: false,
   open: () => set({ isOpen: true }),
   close: () => set({ isOpen: false }),
-  setPlayingFrom: (playingFrom, playingFromLabel) => set({ playingFrom, playingFromLabel }),
+  setPlayingFrom: (playingFromSource, playingFromLabel, startIndex = 0) =>
+    set({
+      playingFromSource,
+      playingFromIndex: Math.max(0, Math.min(startIndex, playingFromSource.length)),
+      playingFromLabel,
+    }),
   enqueueSongs: (songs) =>
     set((state) => {
       if (songs.length === 0) {
@@ -63,9 +70,9 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       return nextSong;
     }
 
-    if (state.playingFrom.length > 0) {
-      const [nextSong, ...rest] = state.playingFrom;
-      set({ playingFrom: rest });
+    if (state.playingFromIndex < state.playingFromSource.length) {
+      const nextSong = state.playingFromSource[state.playingFromIndex];
+      set({ playingFromIndex: state.playingFromIndex + 1 });
       return nextSong;
     }
 

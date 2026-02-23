@@ -1335,28 +1335,60 @@ impl Database {
             .lock()
             .map_err(|_| String::from("failed to lock database connection"))?;
 
-        let playlist = get_playlist_node_with_connection(&connection, playlist_id)?;
-        if playlist.is_folder {
-            return Err(String::from("folders cannot contain tracks"));
-        }
+        ensure_playlist_is_track_container(&connection, playlist_id)?;
+        query_playlist_tracks(&connection, playlist_id, None, None)
+    }
+
+    pub fn playlist_get_track_count(&self, playlist_id: &str) -> Result<i64, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        ensure_playlist_is_track_container(&connection, playlist_id)?;
+
+        connection
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM playlist_tracks pt
+                INNER JOIN songs s ON s.id = pt.song_id
+                WHERE pt.playlist_id = ?1
+                  AND s.is_missing = 0
+                ",
+                params![playlist_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("failed to count playlist tracks: {error}"))
+    }
+
+    pub fn playlist_get_tracks_page(
+        &self,
+        playlist_id: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<PlaylistTrackItem>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        ensure_playlist_is_track_container(&connection, playlist_id)?;
+        query_playlist_tracks(&connection, playlist_id, Some(limit), Some(offset))
+    }
+
+    pub fn playlist_get_track_ids(&self, playlist_id: &str) -> Result<Vec<String>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        ensure_playlist_is_track_container(&connection, playlist_id)?;
 
         let mut statement = connection
             .prepare(
                 "
-                SELECT
-                    pt.playlist_id,
-                    pt.position,
-                    s.id,
-                    s.title,
-                    s.artist,
-                    s.album,
-                    s.duration_ms,
-                    s.artwork_path,
-                    s.file_path,
-                    s.custom_start_ms,
-                    s.play_count,
-                    s.comment,
-                    s.date_added
+                SELECT s.id
                 FROM playlist_tracks pt
                 INNER JOIN songs s ON s.id = pt.song_id
                 WHERE pt.playlist_id = ?1
@@ -1364,55 +1396,19 @@ impl Database {
                 ORDER BY pt.position ASC, pt.added_at ASC
                 ",
             )
-            .map_err(|error| format!("failed to prepare playlist tracks query: {error}"))?;
+            .map_err(|error| format!("failed to prepare playlist track ids query: {error}"))?;
 
         let rows = statement
-            .query_map(params![playlist_id], |row| {
-                Ok(PlaylistTrackItem {
-                    playlist_id: row.get(0)?,
-                    position: row.get(1)?,
-                    song: SongListItem {
-                        id: row.get(2)?,
-                        title: row.get(3)?,
-                        artist: row.get(4)?,
-                        album: row.get(5)?,
-                        duration_ms: row.get(6)?,
-                        artwork_path: row.get(7)?,
-                        file_path: row.get(8)?,
-                        custom_start_ms: row.get(9)?,
-                        play_count: row.get(10)?,
-                        comment: row.get(11)?,
-                        tags: Vec::new(),
-                        date_added: row.get(12)?,
-                    },
-                })
-            })
-            .map_err(|error| format!("failed to query playlist tracks: {error}"))?;
+            .query_map(params![playlist_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("failed to query playlist track ids: {error}"))?;
 
-        let mut tracks = Vec::new();
+        let mut song_ids = Vec::new();
         for row in rows {
-            tracks.push(
-                row.map_err(|error| format!("failed to decode playlist track row: {error}"))?,
-            );
+            song_ids
+                .push(row.map_err(|error| format!("failed to decode playlist track id row: {error}"))?);
         }
 
-        let mut songs = tracks
-            .iter()
-            .map(|track| track.song.clone())
-            .collect::<Vec<_>>();
-        hydrate_song_tags(&connection, &mut songs)?;
-        let tags_by_song_id = songs
-            .into_iter()
-            .map(|song| (song.id, song.tags))
-            .collect::<HashMap<_, _>>();
-        for track in &mut tracks {
-            track.song.tags = tags_by_song_id
-                .get(&track.song.id)
-                .cloned()
-                .unwrap_or_default();
-        }
-
-        Ok(tracks)
+        Ok(song_ids)
     }
 
     pub fn playlist_add_songs(
@@ -2430,6 +2426,113 @@ fn normalize_playlist_name(name: &str, is_folder: bool) -> String {
     }
 }
 
+fn query_playlist_tracks(
+    connection: &Connection,
+    playlist_id: &str,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<PlaylistTrackItem>, String> {
+    let pagination_clause = if limit.is_some() && offset.is_some() {
+        "LIMIT ?2 OFFSET ?3"
+    } else {
+        ""
+    };
+
+    let query = format!(
+        "
+        SELECT
+            pt.playlist_id,
+            pt.position,
+            s.id,
+            s.title,
+            s.artist,
+            s.album,
+            s.duration_ms,
+            s.artwork_path,
+            s.file_path,
+            s.custom_start_ms,
+            s.play_count,
+            s.comment,
+            s.date_added
+        FROM playlist_tracks pt
+        INNER JOIN songs s ON s.id = pt.song_id
+        WHERE pt.playlist_id = ?1
+          AND s.is_missing = 0
+        ORDER BY pt.position ASC, pt.added_at ASC
+        {pagination_clause}
+        "
+    );
+
+    let mut values = vec![SqlValue::from(playlist_id.to_string())];
+    if let (Some(limit), Some(offset)) = (limit, offset) {
+        values.push(SqlValue::Integer(i64::from(limit)));
+        values.push(SqlValue::Integer(i64::from(offset)));
+    }
+
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|error| format!("failed to prepare playlist tracks query: {error}"))?;
+
+    let rows = statement
+        .query_map(params_from_iter(values), |row| {
+            Ok(PlaylistTrackItem {
+                playlist_id: row.get(0)?,
+                position: row.get(1)?,
+                song: SongListItem {
+                    id: row.get(2)?,
+                    title: row.get(3)?,
+                    artist: row.get(4)?,
+                    album: row.get(5)?,
+                    duration_ms: row.get(6)?,
+                    artwork_path: row.get(7)?,
+                    file_path: row.get(8)?,
+                    custom_start_ms: row.get(9)?,
+                    play_count: row.get(10)?,
+                    comment: row.get(11)?,
+                    tags: Vec::new(),
+                    date_added: row.get(12)?,
+                },
+            })
+        })
+        .map_err(|error| format!("failed to query playlist tracks: {error}"))?;
+
+    let mut tracks = Vec::new();
+    for row in rows {
+        tracks.push(
+            row.map_err(|error| format!("failed to decode playlist track row: {error}"))?,
+        );
+    }
+
+    let mut songs = tracks
+        .iter()
+        .map(|track| track.song.clone())
+        .collect::<Vec<_>>();
+    hydrate_song_tags(connection, &mut songs)?;
+    let tags_by_song_id = songs
+        .into_iter()
+        .map(|song| (song.id, song.tags))
+        .collect::<HashMap<_, _>>();
+    for track in &mut tracks {
+        track.song.tags = tags_by_song_id
+            .get(&track.song.id)
+            .cloned()
+            .unwrap_or_default();
+    }
+
+    Ok(tracks)
+}
+
+fn ensure_playlist_is_track_container(
+    connection: &Connection,
+    playlist_id: &str,
+) -> Result<(), String> {
+    let playlist = get_playlist_node_with_connection(connection, playlist_id)?;
+    if playlist.is_folder {
+        return Err(String::from("folders cannot contain tracks"));
+    }
+    Ok(())
+}
+
 fn get_playlist_node_with_connection(
     connection: &Connection,
     playlist_id: &str,
@@ -3356,6 +3459,72 @@ mod tests {
                 .map(|track| track.position)
                 .collect::<Vec<_>>(),
             vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn playlist_track_paging_count_and_ids_respect_order_and_missing_songs() {
+        let db = test_db();
+        seed_song(&db, "song-1", "Song 1");
+        seed_song(&db, "song-2", "Song 2");
+        seed_song(&db, "song-3", "Song 3");
+        seed_song(&db, "song-4", "Song 4");
+
+        let playlist = db
+            .playlist_create("Paged", None, false)
+            .expect("failed to create playlist");
+        db.playlist_add_songs(
+            &playlist.id,
+            &[
+                String::from("song-1"),
+                String::from("song-2"),
+                String::from("song-3"),
+                String::from("song-4"),
+            ],
+            None,
+        )
+        .expect("failed to seed playlist tracks");
+
+        {
+            let connection = db.connection.lock().expect("failed to lock db");
+            connection
+                .execute("UPDATE songs SET is_missing = 1 WHERE id = ?1", params!["song-3"])
+                .expect("failed to mark song missing");
+        }
+
+        let count = db
+            .playlist_get_track_count(&playlist.id)
+            .expect("failed to count playlist tracks");
+        assert_eq!(count, 3);
+
+        let page_0 = db
+            .playlist_get_tracks_page(&playlist.id, 2, 0)
+            .expect("failed to fetch page 0");
+        assert_eq!(
+            page_0
+                .iter()
+                .map(|track| track.song.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["song-1", "song-2"]
+        );
+
+        let page_1 = db
+            .playlist_get_tracks_page(&playlist.id, 2, 2)
+            .expect("failed to fetch page 1");
+        assert_eq!(page_1.len(), 1);
+        assert_eq!(page_1[0].song.id, "song-4");
+        assert_eq!(page_1[0].position, 3);
+
+        let ordered_ids = db
+            .playlist_get_track_ids(&playlist.id)
+            .expect("failed to load ordered track ids");
+        assert_eq!(
+            ordered_ids,
+            vec![
+                String::from("song-1"),
+                String::from("song-2"),
+                String::from("song-4")
+            ]
         );
     }
 

@@ -14,24 +14,14 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  Clipboard,
   Clock3,
   Disc3,
   Library,
   LoaderCircle,
-  Music2,
-  PanelRightOpen,
-  Pause,
-  Play,
-  Repeat,
   Search,
   Settings2,
-  Shuffle,
-  SkipBack,
-  SkipForward,
   Tags as TagsIcon,
   UserRound,
-  Volume2,
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -39,12 +29,12 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { SongArtwork } from "./components/song-artwork";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
-import { Slider } from "./components/ui/slider";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { type ImportWizardStep, ItunesImportWizard } from "./features/import/ItunesImportWizard";
 import { EditCommentDialog } from "./features/metadata/EditCommentDialog";
 import { ManageTagsDialog } from "./features/metadata/ManageTagsDialog";
 import { SetCustomStartDialog } from "./features/metadata/SetCustomStartDialog";
+import { TransportBar } from "./features/player/TransportBar";
 import { DraggableSongButton } from "./features/playlists/DraggableSongButton";
 import { PlaylistSidebar } from "./features/playlists/PlaylistSidebar";
 import { PlaylistView } from "./features/playlists/PlaylistView";
@@ -72,6 +62,7 @@ import type {
   LibraryFileChangedEvent,
   LibrarySearchResult,
   PlaylistNode,
+  PlaylistTrackItem,
   RepeatMode,
   ScanProgressEvent,
   SongListItem,
@@ -81,9 +72,14 @@ import type {
 } from "./types";
 
 const SONG_PAGE_SIZE = 250;
+const PLAYLIST_PAGE_SIZE = 250;
 const SONG_ROW_HEIGHT = 54;
 const SEARCH_DEBOUNCE_MS = 150;
 const SEARCH_RESULT_LIMIT = 20;
+const PERF_TRACE_ENABLED = (() => {
+  const rawValue = String(import.meta.env.VITE_PERF_TRACE ?? "").toLowerCase();
+  return rawValue === "1" || rawValue === "true" || rawValue === "yes";
+})();
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) {
@@ -228,7 +224,8 @@ function App() {
 
   const queueSongIds = useSessionStore((state) => state.queueSongIds);
   const queueCurrentIndex = useSessionStore((state) => state.queueCurrentIndex);
-  const setQueueState = useSessionStore((state) => state.setQueueState);
+  const setQueueSongIds = useSessionStore((state) => state.setQueueSongIds);
+  const setQueueCurrentIndex = useSessionStore((state) => state.setQueueCurrentIndex);
   const repeatMode = useSessionStore((state) => state.repeatMode);
   const setRepeatMode = useSessionStore((state) => state.setRepeatMode);
   const shuffleEnabled = useSessionStore((state) => state.shuffleEnabled);
@@ -246,9 +243,6 @@ function App() {
   const queue = usePlayerStore((state) => state.queue);
   const nowPlaying = usePlayerStore((state) => state.nowPlaying);
   const currentIndex = usePlayerStore((state) => state.currentIndex);
-  const playbackState = usePlayerStore((state) => state.playbackState);
-  const positionMs = usePlayerStore((state) => state.positionMs);
-  const durationMs = usePlayerStore((state) => state.durationMs);
 
   const setSongs = usePlayerStore((state) => state.setSongs);
   const setQueue = usePlayerStore((state) => state.setQueue);
@@ -260,7 +254,14 @@ function App() {
   const playlists = usePlaylistStore((state) => state.playlists);
   const setPlaylists = usePlaylistStore((state) => state.setPlaylists);
   const tracksByPlaylistId = usePlaylistStore((state) => state.tracksByPlaylistId);
-  const setPlaylistTracks = usePlaylistStore((state) => state.setPlaylistTracks);
+  const trackCountsByPlaylistId = usePlaylistStore((state) => state.trackCountsByPlaylistId);
+  const tracksPageByPlaylistId = usePlaylistStore((state) => state.tracksPageByPlaylistId);
+  const loadedPagesByPlaylistId = usePlaylistStore((state) => state.loadedPagesByPlaylistId);
+  const setPlaylistTrackCount = usePlaylistStore((state) => state.setPlaylistTrackCount);
+  const setPlaylistTracksPage = usePlaylistStore((state) => state.setPlaylistTracksPage);
+  const setPlaylistPageLoading = usePlaylistStore((state) => state.setPlaylistPageLoading);
+  const invalidatePlaylistCache = usePlaylistStore((state) => state.invalidatePlaylistCache);
+  const invalidatePlaylistsCache = usePlaylistStore((state) => state.invalidatePlaylistsCache);
   const removePlaylistFromStore = usePlaylistStore((state) => state.removePlaylist);
   const selectedSongIds = usePlaylistStore((state) => state.selectedSongIds);
   const selectSongs = usePlaylistStore((state) => state.selectSongs);
@@ -271,7 +272,8 @@ function App() {
   const clearClipboard = usePlaylistStore((state) => state.clearClipboard);
 
   const upNext = useQueueStore((state) => state.upNext);
-  const playingFrom = useQueueStore((state) => state.playingFrom);
+  const playingFromSource = useQueueStore((state) => state.playingFromSource);
+  const playingFromIndex = useQueueStore((state) => state.playingFromIndex);
   const playingFromLabel = useQueueStore((state) => state.playingFromLabel);
   const enqueueSongs = useQueueStore((state) => state.enqueueSongs);
   const reorderUpNext = useQueueStore((state) => state.reorderUpNext);
@@ -281,6 +283,10 @@ function App() {
   const upNextOpen = useQueueStore((state) => state.isOpen);
   const openUpNext = useQueueStore((state) => state.open);
   const closeUpNext = useQueueStore((state) => state.close);
+  const playingFrom = useMemo(
+    () => playingFromSource.slice(playingFromIndex, playingFromIndex + 50),
+    [playingFromIndex, playingFromSource],
+  );
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const songsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -288,8 +294,17 @@ function App() {
   const artistsScrollRef = useRef<HTMLDivElement | null>(null);
   const tagFilterMenuRootRef = useRef<HTMLDivElement | null>(null);
   const watcherRefreshTimeoutRef = useRef<number | null>(null);
+  const activePlaylistRequestIdRef = useRef(0);
+  const perfPlaylistOpenRef = useRef<{ playlistId: string; startedAt: number } | null>(null);
+  const perfPlayRequestRef = useRef<{ songId: string; startedAt: number } | null>(null);
+  const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
 
   const [albumGridWidth, setAlbumGridWidth] = useState(920);
+  const [playlistReorderMode, setPlaylistReorderMode] = useState(false);
+  const [songsOrderedIds, setSongsOrderedIds] = useState<string[]>([]);
+  const [playlistTrackIdsByPlaylistId, setPlaylistTrackIdsByPlaylistId] = useState<
+    Record<string, string[]>
+  >({});
 
   const loadedSongPagesRef = useRef<Set<number>>(new Set());
   const loadingSongPagesRef = useRef<Set<number>>(new Set());
@@ -331,10 +346,48 @@ function App() {
     () => playlists.find((playlist) => playlist.id === activePlaylistId) ?? null,
     [activePlaylistId, playlists],
   );
-  const activePlaylistTracks = useMemo(
-    () => (activePlaylistId ? (tracksByPlaylistId[activePlaylistId] ?? []) : []),
-    [activePlaylistId, tracksByPlaylistId],
+  const activePlaylistTrackIds = useMemo(
+    () => (activePlaylistId ? (playlistTrackIdsByPlaylistId[activePlaylistId] ?? []) : []),
+    [activePlaylistId, playlistTrackIdsByPlaylistId],
   );
+  const activePlaylistTrackCount = useMemo(() => {
+    if (!activePlaylistId) {
+      return 0;
+    }
+    return trackCountsByPlaylistId[activePlaylistId] ?? activePlaylistTrackIds.length;
+  }, [activePlaylistId, activePlaylistTrackIds.length, trackCountsByPlaylistId]);
+  const activePlaylistTracksByIndex = useMemo(() => {
+    if (!activePlaylistId) {
+      return [] as Array<PlaylistTrackItem | undefined>;
+    }
+
+    const sparse = Array<PlaylistTrackItem | undefined>(activePlaylistTrackCount).fill(undefined);
+    const pages = tracksPageByPlaylistId[activePlaylistId] ?? {};
+    for (const [pageValue, tracks] of Object.entries(pages)) {
+      const page = Number(pageValue);
+      if (!Number.isFinite(page) || page < 0) {
+        continue;
+      }
+      const baseIndex = page * PLAYLIST_PAGE_SIZE;
+      for (let index = 0; index < tracks.length; index += 1) {
+        sparse[baseIndex + index] = tracks[index];
+      }
+    }
+
+    if (Object.keys(pages).length === 0) {
+      const fallback = tracksByPlaylistId[activePlaylistId] ?? [];
+      for (let index = 0; index < fallback.length; index += 1) {
+        sparse[index] = fallback[index];
+      }
+    }
+
+    return sparse;
+  }, [activePlaylistId, activePlaylistTrackCount, tracksByPlaylistId, tracksPageByPlaylistId]);
+  const activePlaylistLoadedTracks = useMemo(
+    () => activePlaylistTracksByIndex.filter((track): track is PlaylistTrackItem => Boolean(track)),
+    [activePlaylistTracksByIndex],
+  );
+  const selectedSongIdSet = useMemo(() => new Set(selectedSongIds), [selectedSongIds]);
   const songLookupById = useMemo(() => {
     const lookup = new Map<string, SongListItem>();
     for (const song of Object.values(songsByIndex)) {
@@ -343,7 +396,7 @@ function App() {
     for (const song of queue) {
       lookup.set(song.id, song);
     }
-    for (const track of activePlaylistTracks) {
+    for (const track of activePlaylistLoadedTracks) {
       lookup.set(track.song.id, track.song);
     }
     for (const song of searchResults?.songs ?? []) {
@@ -356,7 +409,14 @@ function App() {
       lookup.set(song.id, song);
     }
     return lookup;
-  }, [activePlaylistTracks, albumTracks, artistAlbumTracks, queue, searchResults, songsByIndex]);
+  }, [
+    activePlaylistLoadedTracks,
+    albumTracks,
+    artistAlbumTracks,
+    queue,
+    searchResults,
+    songsByIndex,
+  ]);
   const metadataTargetSongs = useMemo(
     () =>
       metadataTargetSongIds
@@ -364,22 +424,29 @@ function App() {
         .filter((song): song is SongListItem => Boolean(song)),
     [metadataTargetSongIds, songLookupById],
   );
+  const tracePerf = useCallback((label: string, startedAt: number, extra?: string) => {
+    if (!PERF_TRACE_ENABLED) {
+      return;
+    }
+    const elapsedMs = performance.now() - startedAt;
+    console.debug(`[perf] ${label} ${elapsedMs.toFixed(1)}ms${extra ? ` (${extra})` : ""}`);
+  }, []);
 
   const resetSongPages = useCallback(() => {
     loadedSongPagesRef.current.clear();
     loadingSongPagesRef.current.clear();
     setSongsByIndex({});
+    setSongsOrderedIds([]);
   }, []);
 
   const persistQueue = useCallback(
-    (nextQueue: SongListItem[], nextIndex: number | null) => {
-      setQueueState({
-        songIds: nextQueue.map((song) => song.id),
-        currentIndex: nextIndex,
-        repeatMode,
-      });
+    (nextQueue: SongListItem[], nextIndex: number | null, persistSongIds = true) => {
+      if (persistSongIds) {
+        setQueueSongIds(nextQueue.map((song) => song.id));
+      }
+      setQueueCurrentIndex(nextIndex);
     },
-    [repeatMode, setQueueState],
+    [setQueueCurrentIndex, setQueueSongIds],
   );
 
   const refreshSongCount = useCallback(async () => {
@@ -446,6 +513,13 @@ function App() {
           const next = { ...previous };
           for (let index = 0; index < chunk.length; index += 1) {
             next[offset + index] = chunk[index];
+          }
+          return next;
+        });
+        setSongsOrderedIds((previous) => {
+          const next = [...previous];
+          for (let index = 0; index < chunk.length; index += 1) {
+            next[offset + index] = chunk[index].id;
           }
           return next;
         });
@@ -534,10 +608,10 @@ function App() {
       setPlaybackState("playing");
       setPosition(startMs ?? song.custom_start_ms ?? 0, song.duration_ms);
 
+      perfPlayRequestRef.current = { songId: song.id, startedAt: performance.now() };
       await audioApi.play(song.id, startMs);
       setErrorMessage(null);
-      const remaining = nextQueue.slice(startIndex + 1);
-      setPlayingFrom(remaining, queueSourceLabel);
+      setPlayingFrom(nextQueue, queueSourceLabel, startIndex + 1);
     },
     [
       persistQueue,
@@ -553,6 +627,7 @@ function App() {
 
   const playSong = useCallback(
     async (song: SongListItem, startMs?: number) => {
+      perfPlayRequestRef.current = { songId: song.id, startedAt: performance.now() };
       await audioApi.play(song.id, startMs);
       setNowPlaying(song);
       setPlaybackState("playing");
@@ -570,9 +645,9 @@ function App() {
       const song = queue[index];
       await playSong(song, startMs);
       setCurrentIndex(index);
-      persistQueue(queue, index);
+      persistQueue(queue, index, false);
       setErrorMessage(null);
-      setPlayingFrom(queue.slice(index + 1), queueSourceLabel);
+      setPlayingFrom(queue, queueSourceLabel, index + 1);
     },
     [persistQueue, playSong, queue, queueSourceLabel, setCurrentIndex, setPlayingFrom],
   );
@@ -624,6 +699,7 @@ function App() {
       return;
     }
 
+    const { positionMs, durationMs } = usePlayerStore.getState();
     if (positionMs > 3000) {
       void audioApi.seek(0).catch((error: unknown) => setErrorMessage(String(error)));
       setPosition(0, durationMs);
@@ -647,9 +723,10 @@ function App() {
     }
 
     void playQueueIndex(currentIndex - 1).catch((error: unknown) => setErrorMessage(String(error)));
-  }, [currentIndex, durationMs, playQueueIndex, positionMs, queue.length, repeatMode, setPosition]);
+  }, [currentIndex, playQueueIndex, queue.length, repeatMode, setPosition]);
 
   const handleTogglePlayback = useCallback(async () => {
+    const playbackState = usePlayerStore.getState().playbackState;
     if (playbackState === "playing") {
       await audioApi.pause();
       setPlaybackState("paused");
@@ -680,7 +757,6 @@ function App() {
     currentIndex,
     loadAllSongsForCurrentSort,
     playQueueIndex,
-    playbackState,
     queue.length,
     replaceQueueAndPlay,
     setPlaybackState,
@@ -800,29 +876,109 @@ function App() {
     [ensureSongPage, refreshSongCount, refreshTags],
   );
 
-  const refreshPlaylistTracks = useCallback(
-    async (playlistId: string) => {
-      const tracks = await playlistApi.getTracks(playlistId);
-      setPlaylistTracks(playlistId, tracks);
-      return tracks;
+  const ensurePlaylistPage = useCallback(
+    async (playlistId: string, page: number, requestId = activePlaylistRequestIdRef.current) => {
+      if (page < 0) {
+        return;
+      }
+
+      const playlistState = usePlaylistStore.getState();
+      const loadedPages = playlistState.loadedPagesByPlaylistId[playlistId] ?? [];
+      const loadingPages = playlistState.loadingPagesByPlaylistId[playlistId] ?? [];
+      if (loadedPages.includes(page) || loadingPages.includes(page)) {
+        return;
+      }
+
+      setPlaylistPageLoading(playlistId, page, true);
+      try {
+        const result = await playlistApi.getTrackPage({
+          playlistId,
+          limit: PLAYLIST_PAGE_SIZE,
+          offset: page * PLAYLIST_PAGE_SIZE,
+        });
+
+        if (requestId !== activePlaylistRequestIdRef.current) {
+          return;
+        }
+
+        setPlaylistTracksPage(playlistId, page, result.tracks);
+
+        const openPerf = perfPlaylistOpenRef.current;
+        if (openPerf && openPerf.playlistId === playlistId && page === 0) {
+          tracePerf("playlist.open.rows-visible", openPerf.startedAt, playlistId);
+          perfPlaylistOpenRef.current = null;
+        }
+      } finally {
+        setPlaylistPageLoading(playlistId, page, false);
+      }
     },
-    [setPlaylistTracks],
+    [setPlaylistPageLoading, setPlaylistTracksPage, tracePerf],
+  );
+
+  const requestPlaylistTrackRange = useCallback(
+    (playlistId: string, startIndex: number, endIndex: number) => {
+      const firstPage = Math.floor(Math.max(0, startIndex) / PLAYLIST_PAGE_SIZE);
+      const lastPage = Math.floor(Math.max(0, endIndex) / PLAYLIST_PAGE_SIZE);
+      for (let page = firstPage - 1; page <= lastPage + 1; page += 1) {
+        if (page >= 0) {
+          void ensurePlaylistPage(playlistId, page);
+        }
+      }
+    },
+    [ensurePlaylistPage],
+  );
+
+  const refreshPlaylistTracks = useCallback(
+    async (playlistId: string, requestId = activePlaylistRequestIdRef.current) => {
+      const startedAt = performance.now();
+      const [trackCount, trackIds] = await Promise.all([
+        playlistApi.getTrackCount(playlistId),
+        playlistApi.getTrackIds(playlistId),
+      ]);
+      if (requestId !== activePlaylistRequestIdRef.current) {
+        return;
+      }
+
+      invalidatePlaylistCache(playlistId);
+      setPlaylistTrackCount(playlistId, trackCount);
+      setPlaylistTrackIdsByPlaylistId((previous) => ({
+        ...previous,
+        [playlistId]: trackIds.songIds,
+      }));
+
+      await ensurePlaylistPage(playlistId, 0, requestId);
+      void ensurePlaylistPage(playlistId, 1, requestId);
+      if (playlistReorderMode && activePlaylistId === playlistId) {
+        const totalPages = Math.ceil(trackCount / PLAYLIST_PAGE_SIZE);
+        for (let page = 2; page < totalPages; page += 1) {
+          void ensurePlaylistPage(playlistId, page, requestId);
+        }
+      }
+      tracePerf("playlist.refresh", startedAt, playlistId);
+    },
+    [
+      activePlaylistId,
+      ensurePlaylistPage,
+      invalidatePlaylistCache,
+      playlistReorderMode,
+      setPlaylistTrackCount,
+      tracePerf,
+    ],
   );
 
   const openPlaylist = useCallback(
-    async (playlistId: string) => {
+    (playlistId: string) => {
+      const startedAt = performance.now();
+      perfViewSwitchRef.current = { view: "playlist", startedAt };
+      perfPlaylistOpenRef.current = { playlistId, startedAt };
+      setPlaylistReorderMode(false);
       setActiveView("playlist");
       setActivePlaylistId(playlistId);
       setSelectedAlbum(null);
       setSelectedArtist(null);
       clearSelection();
-      try {
-        await refreshPlaylistTracks(playlistId);
-      } catch (error: unknown) {
-        setErrorMessage(String(error));
-      }
     },
-    [clearSelection, refreshPlaylistTracks, setActivePlaylistId, setActiveView],
+    [clearSelection, setActivePlaylistId, setActiveView],
   );
 
   const handleCreatePlaylist = useCallback(
@@ -841,7 +997,7 @@ function App() {
         });
         await refreshPlaylists();
         if (!created.is_folder) {
-          await openPlaylist(created.id);
+          openPlaylist(created.id);
         }
       } catch (error: unknown) {
         setErrorMessage(String(error));
@@ -877,6 +1033,11 @@ function App() {
       try {
         await playlistApi.delete(playlist.id);
         removePlaylistFromStore(playlist.id);
+        setPlaylistTrackIdsByPlaylistId((previous) => {
+          const next = { ...previous };
+          delete next[playlist.id];
+          return next;
+        });
         if (activePlaylistId === playlist.id) {
           setActivePlaylistId(null);
           setActiveView("songs");
@@ -903,13 +1064,14 @@ function App() {
 
       try {
         const duplicated = await playlistApi.duplicate(playlist.id);
+        invalidatePlaylistsCache([duplicated.id]);
         await refreshPlaylists();
-        await openPlaylist(duplicated.id);
+        openPlaylist(duplicated.id);
       } catch (error: unknown) {
         setErrorMessage(String(error));
       }
     },
-    [openPlaylist, refreshPlaylists],
+    [invalidatePlaylistsCache, openPlaylist, refreshPlaylists],
   );
 
   const addSongsToQueue = useCallback(
@@ -1023,7 +1185,7 @@ function App() {
         metaKey: boolean;
       },
     ) => {
-      const orderedSongIds = activePlaylistTracks.map((track) => track.song.id);
+      const orderedSongIds = activePlaylistTrackIds;
       if (modifiers.shiftKey) {
         selectSongs({
           songId,
@@ -1051,7 +1213,7 @@ function App() {
         mode: "single",
       });
     },
-    [activePlaylistTracks, selectSongs],
+    [activePlaylistTrackIds, selectSongs],
   );
 
   const handleDragStart = useCallback(
@@ -1217,7 +1379,7 @@ function App() {
           return;
         }
 
-        const currentOrder = activePlaylistTracks.map((track) => track.song.id);
+        const currentOrder = activePlaylistTrackIds;
         const oldIndex = currentOrder.indexOf(activeTrackSongId);
         const newIndex = currentOrder.indexOf(overTrackSongId);
         if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) {
@@ -1235,7 +1397,7 @@ function App() {
     },
     [
       activePlaylistId,
-      activePlaylistTracks,
+      activePlaylistTrackIds,
       addSongsToQueue,
       playlists,
       refreshPlaylistTracks,
@@ -1397,15 +1559,34 @@ function App() {
       if (!activePlaylist) {
         return;
       }
-      const songs = activePlaylistTracks.map((track) => track.song);
-      if (index < 0 || index >= songs.length) {
+      if (index < 0 || index >= activePlaylistTrackIds.length) {
         return;
       }
+      const orderedSongIds = activePlaylistTrackIds;
+
+      const songsById = new Map(songLookupById);
+      const missingSongIds = orderedSongIds.filter((songId) => !songsById.has(songId));
+      if (missingSongIds.length > 0) {
+        const fetchedSongs = await libraryApi.getSongsByIds(missingSongIds);
+        for (const song of fetchedSongs) {
+          songsById.set(song.id, song);
+        }
+      }
+
+      const songs = orderedSongIds
+        .map((songId) => songsById.get(songId))
+        .filter((song): song is SongListItem => Boolean(song));
+      const startSongId = orderedSongIds[index];
+      const startIndex = songs.findIndex((song) => song.id === startSongId);
+      if (startIndex < 0) {
+        return;
+      }
+
       setQueueSourceSongs(songs);
       setQueueSourceLabel(activePlaylist.name);
-      await replaceQueueAndPlay(songs, index);
+      await replaceQueueAndPlay(songs, startIndex);
     },
-    [activePlaylist, activePlaylistTracks, replaceQueueAndPlay],
+    [activePlaylist, activePlaylistTrackIds, replaceQueueAndPlay, songLookupById],
   );
 
   const removeSelectedFromActivePlaylist = useCallback(async () => {
@@ -1425,6 +1606,33 @@ function App() {
     () => nowPlaying ?? (currentIndex !== null ? (queue[currentIndex] ?? null) : null),
     [currentIndex, nowPlaying, queue],
   );
+  const canReorderActivePlaylist = useMemo(() => {
+    if (!activePlaylistId) {
+      return false;
+    }
+    if (activePlaylistTrackCount === 0) {
+      return true;
+    }
+    const loadedPages = loadedPagesByPlaylistId[activePlaylistId] ?? [];
+    const expectedPages = Math.ceil(activePlaylistTrackCount / PLAYLIST_PAGE_SIZE);
+    return loadedPages.length >= expectedPages;
+  }, [activePlaylistId, activePlaylistTrackCount, loadedPagesByPlaylistId]);
+
+  const togglePlaylistReorderMode = useCallback(() => {
+    if (!activePlaylistId) {
+      return;
+    }
+    if (playlistReorderMode) {
+      setPlaylistReorderMode(false);
+      return;
+    }
+
+    setPlaylistReorderMode(true);
+    const totalPages = Math.ceil(activePlaylistTrackCount / PLAYLIST_PAGE_SIZE);
+    for (let page = 0; page < totalPages; page += 1) {
+      void ensurePlaylistPage(activePlaylistId, page);
+    }
+  }, [activePlaylistId, activePlaylistTrackCount, ensurePlaylistPage, playlistReorderMode]);
 
   const handleToggleShuffle = useCallback(() => {
     if (queue.length === 0 || !currentSong) {
@@ -1440,7 +1648,7 @@ function App() {
       setCurrentIndex(0);
       persistQueue(shuffled, 0);
       setShuffleEnabled(true);
-      setPlayingFrom(shuffled.slice(1), queueSourceLabel);
+      setPlayingFrom(shuffled, queueSourceLabel, 1);
       return;
     }
 
@@ -1451,7 +1659,7 @@ function App() {
     setCurrentIndex(nextIndex);
     persistQueue(restoredQueue, nextIndex);
     setShuffleEnabled(false);
-    setPlayingFrom(restoredQueue.slice(nextIndex + 1), queueSourceLabel);
+    setPlayingFrom(restoredQueue, queueSourceLabel, nextIndex + 1);
   }, [
     currentSong,
     persistQueue,
@@ -1533,6 +1741,24 @@ function App() {
   }, [activeView, refreshArtists]);
 
   useEffect(() => {
+    const pending = perfViewSwitchRef.current;
+    if (!pending || pending.view !== activeView) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      tracePerf(`view.switch.${activeView}.interactive`, pending.startedAt);
+      if (perfViewSwitchRef.current === pending) {
+        perfViewSwitchRef.current = null;
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [activeView, tracePerf]);
+
+  useEffect(() => {
     void refreshPlaylists().catch((error: unknown) => setErrorMessage(String(error)));
   }, [refreshPlaylists]);
 
@@ -1544,7 +1770,9 @@ function App() {
     if (activeView !== "playlist" || !activePlaylistId) {
       return;
     }
-    void refreshPlaylistTracks(activePlaylistId).catch((error: unknown) =>
+    const requestId = activePlaylistRequestIdRef.current + 1;
+    activePlaylistRequestIdRef.current = requestId;
+    void refreshPlaylistTracks(activePlaylistId, requestId).catch((error: unknown) =>
       setErrorMessage(String(error)),
     );
   }, [activePlaylistId, activeView, refreshPlaylistTracks]);
@@ -1570,8 +1798,9 @@ function App() {
         setNowPlaying(restoredIndex !== null ? (restoredSongs[restoredIndex] ?? null) : null);
         setQueueSourceSongs(restoredSongs);
         setPlayingFrom(
-          restoredIndex !== null ? restoredSongs.slice(restoredIndex + 1) : restoredSongs,
+          restoredSongs,
           queueSourceLabel,
+          restoredIndex !== null ? restoredIndex + 1 : 0,
         );
       })
       .catch((error: unknown) => setErrorMessage(String(error)));
@@ -1634,6 +1863,10 @@ function App() {
       }),
       listen<AudioStateEvent>("audio:state-changed", (event) => {
         setPlaybackState(event.payload.state);
+        if (event.payload.state === "playing" && perfPlayRequestRef.current) {
+          tracePerf("audio.play.switch", perfPlayRequestRef.current.startedAt);
+          perfPlayRequestRef.current = null;
+        }
       }),
       listen<AudioPositionEvent>("audio:position-update", (event) => {
         setPosition(event.payload.current_ms, event.payload.duration_ms);
@@ -1659,6 +1892,12 @@ function App() {
           window.clearTimeout(watcherRefreshTimeoutRef.current);
         }
         watcherRefreshTimeoutRef.current = window.setTimeout(() => {
+          if (activePlaylistId) {
+            invalidatePlaylistCache(activePlaylistId);
+          }
+          void audioApi.clearDecodedCache().catch(() => {
+            // Ignore cache clear errors triggered by file watcher refresh.
+          });
           void refreshAllViews().catch((error: unknown) => setErrorMessage(String(error)));
           watcherRefreshTimeoutRef.current = null;
         }, 700);
@@ -1676,7 +1915,16 @@ function App() {
         }
       });
     };
-  }, [isScanning, playNext, refreshAllViews, setPlaybackState, setPosition]);
+  }, [
+    activePlaylistId,
+    invalidatePlaylistCache,
+    isScanning,
+    playNext,
+    refreshAllViews,
+    setPlaybackState,
+    setPosition,
+    tracePerf,
+  ]);
 
   useEffect(() => {
     const unlisteners: Array<Promise<UnlistenFn>> = [
@@ -1852,6 +2100,8 @@ function App() {
                           : "text-muted hover:bg-sky/10",
                       )}
                       onClick={() => {
+                        perfViewSwitchRef.current = { view: "songs", startedAt: performance.now() };
+                        setPlaylistReorderMode(false);
                         setActiveView("songs");
                         setActivePlaylistId(null);
                         clearSelection();
@@ -1872,6 +2122,11 @@ function App() {
                           : "text-muted hover:bg-sky/10",
                       )}
                       onClick={() => {
+                        perfViewSwitchRef.current = {
+                          view: "albums",
+                          startedAt: performance.now(),
+                        };
+                        setPlaylistReorderMode(false);
                         setActiveView("albums");
                         setActivePlaylistId(null);
                         clearSelection();
@@ -1891,6 +2146,11 @@ function App() {
                           : "text-muted hover:bg-sky/10",
                       )}
                       onClick={() => {
+                        perfViewSwitchRef.current = {
+                          view: "artists",
+                          startedAt: performance.now(),
+                        };
+                        setPlaylistReorderMode(false);
                         setActiveView("artists");
                         setActivePlaylistId(null);
                         clearSelection();
@@ -1910,6 +2170,11 @@ function App() {
                           : "text-muted hover:bg-sky/10",
                       )}
                       onClick={() => {
+                        perfViewSwitchRef.current = {
+                          view: "settings",
+                          startedAt: performance.now(),
+                        };
+                        setPlaylistReorderMode(false);
                         setActiveView("settings");
                         setActivePlaylistId(null);
                         clearSelection();
@@ -2000,7 +2265,7 @@ function App() {
                                 ? `${artists.length.toLocaleString()} artists`
                                 : activeView === "settings"
                                   ? `${tags.length.toLocaleString()} tags`
-                                  : `${activePlaylistTracks.length.toLocaleString()} songs`}
+                                  : `${activePlaylistTrackCount.toLocaleString()} songs`}
                         </p>
                       </div>
 
@@ -2182,6 +2447,11 @@ function App() {
                                     type="button"
                                     className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
                                     onClick={() => {
+                                      perfViewSwitchRef.current = {
+                                        view: "albums",
+                                        startedAt: performance.now(),
+                                      };
+                                      setPlaylistReorderMode(false);
                                       setActiveView("albums");
                                       setActivePlaylistId(null);
                                       void openAlbum(album).catch((error: unknown) =>
@@ -2213,6 +2483,11 @@ function App() {
                                     type="button"
                                     className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
                                     onClick={() => {
+                                      perfViewSwitchRef.current = {
+                                        view: "artists",
+                                        startedAt: performance.now(),
+                                      };
+                                      setPlaylistReorderMode(false);
                                       setActiveView("artists");
                                       setActivePlaylistId(null);
                                       void openArtist(artist.artist).catch((error: unknown) =>
@@ -2288,7 +2563,7 @@ function App() {
                           >
                             {songVirtualRows.map((virtualRow) => {
                               const song = songsByIndex[virtualRow.index];
-                              const isSelected = song ? selectedSongIds.includes(song.id) : false;
+                              const isSelected = song ? selectedSongIdSet.has(song.id) : false;
                               const isActive = currentSong?.id === song?.id;
 
                               return (
@@ -2312,7 +2587,7 @@ function App() {
                                     payload={{
                                       type: "song",
                                       songIds:
-                                        song && selectedSongIds.includes(song.id)
+                                        song && selectedSongIdSet.has(song.id)
                                           ? selectedSongIds
                                           : song
                                             ? [song.id]
@@ -2324,12 +2599,9 @@ function App() {
                                         return;
                                       }
 
-                                      const orderedSongIds = Object.entries(songsByIndex)
-                                        .sort(
-                                          ([leftIndex], [rightIndex]) =>
-                                            Number(leftIndex) - Number(rightIndex),
-                                        )
-                                        .map(([, value]) => value.id);
+                                      const orderedSongIds = songsOrderedIds.filter(
+                                        (songId): songId is string => Boolean(songId),
+                                      );
                                       const songIndex = orderedSongIds.indexOf(song.id);
                                       selectSongs({
                                         songId: song.id,
@@ -2355,7 +2627,7 @@ function App() {
                                         return;
                                       }
                                       event.preventDefault();
-                                      if (!selectedSongIds.includes(song.id)) {
+                                      if (!selectedSongIdSet.has(song.id)) {
                                         selectSongs({
                                           songId: song.id,
                                           songIndex: 0,
@@ -2363,7 +2635,7 @@ function App() {
                                           mode: "single",
                                         });
                                       }
-                                      const songIds = selectedSongIds.includes(song.id)
+                                      const songIds = selectedSongIdSet.has(song.id)
                                         ? selectedSongIds
                                         : [song.id];
                                       setSongContextMenu({
@@ -2449,9 +2721,19 @@ function App() {
                     {activeView === "playlist" ? (
                       <PlaylistView
                         playlist={activePlaylist}
-                        tracks={activePlaylistTracks}
+                        tracks={activePlaylistTracksByIndex}
+                        trackCount={activePlaylistTrackCount}
                         currentSongId={currentSong?.id ?? null}
                         selectedSongIds={selectedSongIds}
+                        selectedSongIdSet={selectedSongIdSet}
+                        isReorderMode={playlistReorderMode}
+                        canReorder={canReorderActivePlaylist}
+                        onToggleReorderMode={togglePlaylistReorderMode}
+                        onRequestTrackRange={(startIndex, endIndex) => {
+                          if (activePlaylistId) {
+                            requestPlaylistTrackRange(activePlaylistId, startIndex, endIndex);
+                          }
+                        }}
                         onSelectTrack={handlePlaylistTrackSelection}
                         onPlayTrack={(index) => {
                           void playFromPlaylistIndex(index).catch((error: unknown) =>
@@ -2464,7 +2746,7 @@ function App() {
                         }}
                         onTrackContextMenu={(event, songId, index) => {
                           event.preventDefault();
-                          if (!selectedSongIds.includes(songId)) {
+                          if (!selectedSongIdSet.has(songId)) {
                             handlePlaylistTrackSelection(songId, index, {
                               shiftKey: false,
                               metaKey: false,
@@ -2473,7 +2755,7 @@ function App() {
                           setSongContextMenu({
                             x: event.clientX,
                             y: event.clientY,
-                            songIds: selectedSongIds.includes(songId) ? selectedSongIds : [songId],
+                            songIds: selectedSongIdSet.has(songId) ? selectedSongIds : [songId],
                             index,
                             source: "playlist",
                           });
@@ -2809,178 +3091,38 @@ function App() {
             </Group>
           </div>
 
-          <footer className="border-t border-border bg-surface/95 px-4 py-3 backdrop-blur-sm">
-            <div className="grid grid-cols-3 items-center gap-4">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-sky/40">
-                  <Music2 className="h-6 w-6 text-night/70" />
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">
-                    {currentSong?.title ?? "Nothing playing"}
-                  </p>
-                  <p className="truncate text-xs text-muted">
-                    {currentSong
-                      ? `${currentSong.artist} • ${currentSong.album}`
-                      : "Double-click a song to start playback"}
-                  </p>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-center gap-2">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant="secondary"
-                        onClick={playPrevious}
-                        disabled={queue.length === 0}
-                      >
-                        <SkipBack className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Previous</TooltipContent>
-                  </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="icon"
-                        onClick={() =>
-                          void handleTogglePlayback().catch((error: unknown) =>
-                            setErrorMessage(String(error)),
-                          )
-                        }
-                        disabled={queue.length === 0 && songCount === 0}
-                      >
-                        {playbackState === "playing" ? (
-                          <Pause className="h-5 w-5" />
-                        ) : (
-                          <Play className="h-5 w-5" />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {playbackState === "playing" ? "Pause" : "Play"}
-                    </TooltipContent>
-                  </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant="secondary"
-                        onClick={playNext}
-                        disabled={queue.length === 0}
-                      >
-                        <SkipForward className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Next</TooltipContent>
-                  </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant={shuffleEnabled ? "default" : "secondary"}
-                        onClick={handleToggleShuffle}
-                        disabled={queue.length === 0}
-                      >
-                        <Shuffle className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {shuffleEnabled ? "Shuffle: On" : "Shuffle: Off"}
-                    </TooltipContent>
-                  </Tooltip>
-
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant={repeatMode === "off" ? "secondary" : "default"}
-                        onClick={() => setRepeatMode(cycleRepeatMode(repeatMode))}
-                      >
-                        <Repeat className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {repeatMode === "off"
-                        ? "Repeat: Off"
-                        : repeatMode === "all"
-                          ? "Repeat: All"
-                          : "Repeat: One"}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-
-                <div className="flex items-center gap-2 text-xs text-muted">
-                  <span className="w-10 text-right">{formatDuration(positionMs)}</span>
-                  <Slider
-                    value={[Math.min(positionMs, durationMs || positionMs)]}
-                    max={Math.max(durationMs, 1)}
-                    step={250}
-                    onValueCommit={(value) => {
-                      const nextPosition = value[0] ?? 0;
-                      setPosition(nextPosition, durationMs);
-                      void audioApi
-                        .seek(nextPosition)
-                        .catch((error: unknown) => setErrorMessage(String(error)));
-                    }}
-                  />
-                  <span className="w-10">{formatDuration(durationMs)}</span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 text-xs text-muted">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="mr-1"
-                  onClick={openUpNext}
-                >
-                  <PanelRightOpen className="mr-1 h-3.5 w-3.5" />
-                  Up Next ({upNext.length})
-                </Button>
-                <p className="mr-2">Queue: {queue.length}</p>
-                {clipboardHint ? (
-                  <span className="rounded-full bg-sky/20 px-2 py-1 text-[11px] text-text">
-                    {clipboardHint}
-                  </span>
-                ) : null}
-                {clipboardSongIds.length > 0 ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    onClick={clearClipboard}
-                  >
-                    <Clipboard className="mr-1 h-3.5 w-3.5" />
-                    {clipboardSongIds.length} copied
-                  </Button>
-                ) : null}
-                <Volume2 className="h-4 w-4" />
-                <div className="w-28">
-                  <Slider
-                    value={[persistedVolume * 100]}
-                    max={100}
-                    step={1}
-                    onValueChange={(value) => {
-                      const nextVolume = (value[0] ?? 0) / 100;
-                      setPersistedVolume(nextVolume);
-                      void audioApi
-                        .setVolume(nextVolume)
-                        .catch((error: unknown) => setErrorMessage(String(error)));
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </footer>
+          <TransportBar
+            currentSong={currentSong}
+            queueLength={queue.length}
+            songCount={songCount}
+            upNextCount={upNext.length}
+            shuffleEnabled={shuffleEnabled}
+            repeatMode={repeatMode}
+            clipboardHint={clipboardHint}
+            clipboardCount={clipboardSongIds.length}
+            volume={persistedVolume}
+            onPrevious={playPrevious}
+            onTogglePlayback={() => {
+              void handleTogglePlayback().catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+            onNext={playNext}
+            onToggleShuffle={handleToggleShuffle}
+            onCycleRepeat={() => setRepeatMode(cycleRepeatMode(repeatMode))}
+            onSeek={(nextPosition, nextDurationMs) => {
+              setPosition(nextPosition, nextDurationMs);
+              void audioApi
+                .seek(nextPosition)
+                .catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+            onOpenUpNext={openUpNext}
+            onClearClipboard={clearClipboard}
+            onVolumeChange={(nextVolume) => {
+              setPersistedVolume(nextVolume);
+              void audioApi
+                .setVolume(nextVolume)
+                .catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+          />
 
           {songContextMenu ? (
             <div
@@ -3089,7 +3231,7 @@ function App() {
           <SetCustomStartDialog
             isOpen={showCustomStartDialog}
             initialMs={metadataTargetSongs[0]?.custom_start_ms ?? 0}
-            currentPositionMs={positionMs}
+            currentPositionMs={usePlayerStore.getState().positionMs}
             targetSongCount={metadataTargetSongIds.length}
             onClose={() => setShowCustomStartDialog(false)}
             onSave={(customStartMs) => {

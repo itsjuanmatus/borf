@@ -257,6 +257,32 @@ pub fn playlist_get_tracks(
 }
 
 #[tauri::command]
+pub fn playlist_get_track_count(
+    state: State<'_, AppState>,
+    playlist_id: String,
+) -> Result<i64, String> {
+    state.db.playlist_get_track_count(&playlist_id)
+}
+
+#[tauri::command]
+pub fn playlist_get_tracks_page(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<PlaylistTrackItem>, String> {
+    state.db.playlist_get_tracks_page(&playlist_id, limit, offset)
+}
+
+#[tauri::command]
+pub fn playlist_get_track_ids(
+    state: State<'_, AppState>,
+    playlist_id: String,
+) -> Result<Vec<String>, String> {
+    state.db.playlist_get_track_ids(&playlist_id)
+}
+
+#[tauri::command]
 pub fn playlist_add_songs(
     state: State<'_, AppState>,
     playlist_id: String,
@@ -383,4 +409,16 @@ pub fn audio_set_volume(
         })?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn audio_clear_decoded_cache(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let result = state.audio.clear_decoded_cache();
+    if let Err(error) = &result {
+        AudioEngine::emit_error(&app_handle, error.clone());
+    }
+    result
 }

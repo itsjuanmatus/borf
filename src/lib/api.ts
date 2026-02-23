@@ -10,19 +10,38 @@ import type {
   LibrarySearchResult,
   PlaylistMutationResult,
   PlaylistNode,
+  PlaylistTrackIdsResult,
   PlaylistTrackItem,
+  PlaylistTrackPageResult,
   SongListItem,
   SongSortField,
   SortOrder,
   Tag,
 } from "../types";
 
+const PERF_TRACE_ENABLED = (() => {
+  const rawValue = String(import.meta.env.VITE_PERF_TRACE ?? "").toLowerCase();
+  return rawValue === "1" || rawValue === "true" || rawValue === "yes";
+})();
+
+async function invokeWithPerf<T>(command: string, args?: Record<string, unknown>) {
+  const start = PERF_TRACE_ENABLED ? performance.now() : 0;
+  try {
+    return await invoke<T>(command, args);
+  } finally {
+    if (PERF_TRACE_ENABLED) {
+      const elapsedMs = performance.now() - start;
+      console.debug(`[perf] tauri:${command} ${elapsedMs.toFixed(1)}ms`);
+    }
+  }
+}
+
 export const libraryApi = {
   scan(folderPath: string) {
-    return invoke<void>("library_scan", { folderPath });
+    return invokeWithPerf<void>("library_scan", { folderPath });
   },
   getSongCount(tagIds?: string[]) {
-    return invoke<number>("library_get_song_count", { tagIds: tagIds ?? null });
+    return invokeWithPerf<number>("library_get_song_count", { tagIds: tagIds ?? null });
   },
   getSongs(params: {
     limit: number;
@@ -31,126 +50,156 @@ export const libraryApi = {
     order: SortOrder;
     tagIds?: string[];
   }) {
-    return invoke<SongListItem[]>("library_get_songs", params);
+    return invokeWithPerf<SongListItem[]>("library_get_songs", params);
   },
   getSongsByIds(songIds: string[]) {
-    return invoke<SongListItem[]>("library_get_songs_by_ids", { songIds });
+    return invokeWithPerf<SongListItem[]>("library_get_songs_by_ids", { songIds });
   },
   getAlbums(params: { limit: number; offset: number; sort: AlbumSortField; order: SortOrder }) {
-    return invoke<AlbumListItem[]>("library_get_albums", params);
+    return invokeWithPerf<AlbumListItem[]>("library_get_albums", params);
   },
   getAlbumTracks(params: { album: string; albumArtist: string }) {
-    return invoke<SongListItem[]>("library_get_album_tracks", params);
+    return invokeWithPerf<SongListItem[]>("library_get_album_tracks", params);
   },
   getArtists(params: { limit: number; offset: number; sort: ArtistSortField; order: SortOrder }) {
-    return invoke<ArtistListItem[]>("library_get_artists", params);
+    return invokeWithPerf<ArtistListItem[]>("library_get_artists", params);
   },
   getArtistAlbums(artist: string) {
-    return invoke<AlbumListItem[]>("library_get_artist_albums", { artist });
+    return invokeWithPerf<AlbumListItem[]>("library_get_artist_albums", { artist });
   },
   search(query: string, limit = 25, tagIds?: string[]) {
-    return invoke<LibrarySearchResult>("library_search", { query, limit, tagIds: tagIds ?? null });
+    return invokeWithPerf<LibrarySearchResult>("library_search", {
+      query,
+      limit,
+      tagIds: tagIds ?? null,
+    });
   },
   updateSongComment(songId: string, comment: string | null) {
-    return invoke<void>("song_update_comment", { songId, comment });
+    return invokeWithPerf<void>("song_update_comment", { songId, comment });
   },
   setSongCustomStart(songId: string, customStartMs: number) {
-    return invoke<void>("song_set_custom_start", { songId, customStartMs });
+    return invokeWithPerf<void>("song_set_custom_start", { songId, customStartMs });
   },
   importItunesPreview(xmlPath: string) {
-    return invoke<ItunesPreview>("import_itunes_preview", { xmlPath });
+    return invokeWithPerf<ItunesPreview>("import_itunes_preview", { xmlPath });
   },
   importItunes(xmlPath: string, options: ItunesImportOptions) {
-    return invoke<ItunesImportSummary>("import_itunes", { xmlPath, options });
+    return invokeWithPerf<ItunesImportSummary>("import_itunes", { xmlPath, options });
   },
 };
 
 export const tagsApi = {
   list() {
-    return invoke<Tag[]>("tags_list");
+    return invokeWithPerf<Tag[]>("tags_list");
   },
   create(name: string, color: string) {
-    return invoke<Tag>("tags_create", { name, color });
+    return invokeWithPerf<Tag>("tags_create", { name, color });
   },
   rename(id: string, name: string) {
-    return invoke<Tag>("tags_rename", { id, name });
+    return invokeWithPerf<Tag>("tags_rename", { id, name });
   },
   setColor(id: string, color: string) {
-    return invoke<Tag>("tags_set_color", { id, color });
+    return invokeWithPerf<Tag>("tags_set_color", { id, color });
   },
   delete(id: string) {
-    return invoke<void>("tags_delete", { id });
+    return invokeWithPerf<void>("tags_delete", { id });
   },
   assign(songIds: string[], tagIds: string[]) {
-    return invoke<PlaylistMutationResult>("tags_assign", { songIds, tagIds });
+    return invokeWithPerf<PlaylistMutationResult>("tags_assign", { songIds, tagIds });
   },
   remove(songIds: string[], tagIds: string[]) {
-    return invoke<PlaylistMutationResult>("tags_remove", { songIds, tagIds });
+    return invokeWithPerf<PlaylistMutationResult>("tags_remove", { songIds, tagIds });
   },
   getSongsByTag(tagIds: string[]) {
-    return invoke<SongListItem[]>("tags_get_songs_by_tag", { tagIds });
+    return invokeWithPerf<SongListItem[]>("tags_get_songs_by_tag", { tagIds });
   },
 };
 
 export const audioApi = {
   play(songId: string, startMs?: number) {
-    return invoke<void>("audio_play", { songId, startMs });
+    return invokeWithPerf<void>("audio_play", { songId, startMs });
   },
   pause() {
-    return invoke<void>("audio_pause");
+    return invokeWithPerf<void>("audio_pause");
   },
   resume() {
-    return invoke<void>("audio_resume");
+    return invokeWithPerf<void>("audio_resume");
   },
   seek(positionMs: number) {
-    return invoke<void>("audio_seek", { positionMs });
+    return invokeWithPerf<void>("audio_seek", { positionMs });
   },
   setVolume(volume: number) {
-    return invoke<void>("audio_set_volume", { volume });
+    return invokeWithPerf<void>("audio_set_volume", { volume });
+  },
+  clearDecodedCache() {
+    return invokeWithPerf<void>("audio_clear_decoded_cache");
   },
 };
 
 export const playlistApi = {
   list() {
-    return invoke<PlaylistNode[]>("playlist_list");
+    return invokeWithPerf<PlaylistNode[]>("playlist_list");
   },
   create(params: { name: string; parentId?: string | null; isFolder: boolean }) {
-    return invoke<PlaylistNode>("playlist_create", {
+    return invokeWithPerf<PlaylistNode>("playlist_create", {
       name: params.name,
       parentId: params.parentId ?? null,
       isFolder: params.isFolder,
     });
   },
   rename(id: string, name: string) {
-    return invoke<PlaylistNode>("playlist_rename", { id, name });
+    return invokeWithPerf<PlaylistNode>("playlist_rename", { id, name });
   },
   delete(id: string) {
-    return invoke<void>("playlist_delete", { id });
+    return invokeWithPerf<void>("playlist_delete", { id });
   },
   duplicate(id: string) {
-    return invoke<PlaylistNode>("playlist_duplicate", { id });
+    return invokeWithPerf<PlaylistNode>("playlist_duplicate", { id });
   },
   move(params: { id: string; newParentId?: string | null; newIndex: number }) {
-    return invoke<void>("playlist_move", {
+    return invokeWithPerf<void>("playlist_move", {
       id: params.id,
       newParentId: params.newParentId ?? null,
       newIndex: params.newIndex,
     });
   },
   getTracks(playlistId: string) {
-    return invoke<PlaylistTrackItem[]>("playlist_get_tracks", { playlistId });
+    return invokeWithPerf<PlaylistTrackItem[]>("playlist_get_tracks", { playlistId });
+  },
+  getTrackCount(playlistId: string) {
+    return invokeWithPerf<number>("playlist_get_track_count", { playlistId });
+  },
+  async getTrackPage(params: {
+    playlistId: string;
+    limit: number;
+    offset: number;
+  }): Promise<PlaylistTrackPageResult> {
+    const tracks = await invokeWithPerf<PlaylistTrackItem[]>("playlist_get_tracks_page", params);
+    return {
+      playlistId: params.playlistId,
+      limit: params.limit,
+      offset: params.offset,
+      tracks,
+    };
+  },
+  async getTrackIds(playlistId: string): Promise<PlaylistTrackIdsResult> {
+    const songIds = await invokeWithPerf<string[]>("playlist_get_track_ids", { playlistId });
+    return {
+      playlistId,
+      songIds,
+    };
   },
   addSongs(params: { playlistId: string; songIds: string[]; insertIndex?: number | null }) {
-    return invoke<PlaylistMutationResult>("playlist_add_songs", {
+    return invokeWithPerf<PlaylistMutationResult>("playlist_add_songs", {
       playlistId: params.playlistId,
       songIds: params.songIds,
       insertIndex: params.insertIndex ?? null,
     });
   },
   removeSongs(playlistId: string, songIds: string[]) {
-    return invoke<PlaylistMutationResult>("playlist_remove_songs", { playlistId, songIds });
+    return invokeWithPerf<PlaylistMutationResult>("playlist_remove_songs", { playlistId, songIds });
   },
   reorderTracks(playlistId: string, orderedSongIds: string[]) {
-    return invoke<void>("playlist_reorder_tracks", { playlistId, orderedSongIds });
+    return invokeWithPerf<void>("playlist_reorder_tracks", { playlistId, orderedSongIds });
   },
 };

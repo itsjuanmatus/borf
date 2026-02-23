@@ -30,6 +30,8 @@ interface SessionState {
   setActiveView: (activeView: LibraryView) => void;
   setActivePlaylistId: (playlistId: string | null) => void;
   setQueueState: (queueState: QueueState) => void;
+  setQueueSongIds: (songIds: string[]) => void;
+  setQueueCurrentIndex: (currentIndex: number | null) => void;
   setRepeatMode: (mode: RepeatMode) => void;
   setShuffleEnabled: (enabled: boolean) => void;
   setSongSort: (sort: SongSortField, order: SortOrder) => void;
@@ -64,6 +66,8 @@ export const useSessionStore = create<SessionState>()(
           queueCurrentIndex: queueState.currentIndex,
           repeatMode: queueState.repeatMode,
         }),
+      setQueueSongIds: (queueSongIds) => set({ queueSongIds }),
+      setQueueCurrentIndex: (queueCurrentIndex) => set({ queueCurrentIndex }),
       setRepeatMode: (repeatMode) => set({ repeatMode }),
       setShuffleEnabled: (shuffleEnabled) => set({ shuffleEnabled }),
       setSongSort: (songSort, songOrder) => set({ songSort, songOrder }),

@@ -140,7 +140,7 @@ export function UpNextPanel({
               {playingFrom.length === 0 ? (
                 <p className="p-2 text-xs text-muted">No remaining source songs.</p>
               ) : (
-                playingFrom.slice(0, 50).map((song) => (
+                playingFrom.map((song) => (
                   <div key={song.id} className="rounded-md px-2 py-1.5 text-sm">
                     <p className="truncate font-medium">{song.title}</p>
                     <p className="truncate text-xs text-muted">{song.artist}</p>

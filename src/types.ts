@@ -81,6 +81,18 @@ export interface PlaylistTrackItem {
   song: SongListItem;
 }
 
+export interface PlaylistTrackPageResult {
+  playlistId: string;
+  limit: number;
+  offset: number;
+  tracks: PlaylistTrackItem[];
+}
+
+export interface PlaylistTrackIdsResult {
+  playlistId: string;
+  songIds: string[];
+}
+
 export interface PlaylistMutationResult {
   affected: number;
 }
