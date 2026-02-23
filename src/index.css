@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  --color-leaf: oklch(0.72 0.12 145);
+  --color-sky: oklch(0.84 0.07 220);
+  --color-sand: oklch(0.92 0.04 75);
+  --color-blossom: oklch(0.8 0.08 10);
+  --color-nook: oklch(0.52 0.06 60);
+  --color-cloud: oklch(0.97 0.01 100);
+  --color-night: oklch(0.25 0.03 260);
+
+  --color-bg: var(--color-cloud);
+  --color-surface: oklch(0.96 0.01 90);
+  --color-text: oklch(0.25 0.02 50);
+  --color-muted: oklch(0.6 0.02 50);
+  --color-border: oklch(0.88 0.02 80);
+  --color-accent: var(--color-leaf);
+  --color-playing: var(--color-blossom);
+}
+
+:root {
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: "Inter", "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--color-text);
+  background:
+    radial-gradient(
+      circle at top right,
+      color-mix(in srgb, var(--color-sky) 28%, white) 0%,
+      transparent 48%
+    ),
+    radial-gradient(
+      circle at bottom left,
+      color-mix(in srgb, var(--color-blossom) 22%, white) 0%,
+      transparent 45%
+    ),
+    var(--color-bg);
+}
