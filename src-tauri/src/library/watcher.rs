@@ -258,7 +258,10 @@ mod tests {
 
     #[test]
     fn maps_event_kinds_to_expected_reason_labels() {
-        assert_eq!(reason_from_kind(&EventKind::Create(CreateKind::File)), "added");
+        assert_eq!(
+            reason_from_kind(&EventKind::Create(CreateKind::File)),
+            "added"
+        );
         assert_eq!(
             reason_from_kind(&EventKind::Modify(ModifyKind::Any)),
             "modified"

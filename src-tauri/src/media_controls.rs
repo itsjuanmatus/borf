@@ -1,6 +1,4 @@
-use souvlaki::{
-    MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig,
-};
+use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 

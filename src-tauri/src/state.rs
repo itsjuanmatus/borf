@@ -1,4 +1,6 @@
-use crate::{audio::AudioEngine, db::Database, library::LibraryWatcher, media_controls::MediaControlsManager};
+use crate::{
+    audio::AudioEngine, db::Database, library::LibraryWatcher, media_controls::MediaControlsManager,
+};
 use std::sync::Arc;
 
 pub struct AppState {

@@ -16,6 +16,7 @@ const MIGRATION_0003: &str = include_str!("../../migrations/0003_phase3_playlist
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_itunes_playlist_hierarchy.sql");
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_phase4_metadata_tags_watcher.sql");
 const MIGRATION_0006: &str = include_str!("../../migrations/0006_phase5_play_history.sql");
+const MIGRATION_0007: &str = include_str!("../../migrations/0007_phase6_search_indexes.sql");
 
 const LIBRARY_ROOTS_SETTING_KEY: &str = "library_roots";
 
@@ -84,10 +85,21 @@ pub struct ArtistListItem {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PlaylistSearchItem {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub parent_name: Option<String>,
+    pub is_folder: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LibrarySearchResult {
     pub songs: Vec<SongListItem>,
     pub albums: Vec<AlbumListItem>,
     pub artists: Vec<ArtistListItem>,
+    pub playlists: Vec<PlaylistSearchItem>,
+    pub folders: Vec<PlaylistSearchItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -877,6 +889,8 @@ impl Database {
                 songs: Vec::new(),
                 albums: Vec::new(),
                 artists: Vec::new(),
+                playlists: Vec::new(),
+                folders: Vec::new(),
             });
         }
 
@@ -906,15 +920,20 @@ impl Database {
                     songs: Vec::new(),
                     albums: Vec::new(),
                     artists: Vec::new(),
+                    playlists: Vec::new(),
+                    folders: Vec::new(),
                 });
             }
         }
 
         let fts_query = build_fts_query(&text_query);
+        let escaped_text_query = escape_like_pattern(&text_query);
+        let prefix_pattern = format!("{escaped_text_query}%");
+        let contains_pattern = format!("%{escaped_text_query}%");
         let (tag_clause, tag_values) = build_song_tag_clause_values(&required_tag_ids);
         let mut songs = Vec::new();
 
-        if let Some(fts_query) = fts_query {
+        if let Some(fts_query) = fts_query.clone() {
             let query = format!(
                 "
                 SELECT
@@ -934,12 +953,23 @@ impl Database {
                 WHERE s.is_missing = 0
                   AND songs_fts MATCH ?
                   {tag_clause}
-                ORDER BY bm25(songs_fts), s.title COLLATE NOCASE ASC
+                ORDER BY
+                    CASE
+                        WHEN s.title LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 0
+                        WHEN s.artist LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 1
+                        WHEN s.album LIKE ? ESCAPE '\\' COLLATE NOCASE THEN 2
+                        ELSE 3
+                    END,
+                    bm25(songs_fts),
+                    s.title COLLATE NOCASE ASC
                 LIMIT ?
                 "
             );
             let mut values = vec![SqlValue::from(fts_query)];
             values.extend(tag_values.clone());
+            values.push(SqlValue::from(prefix_pattern.clone()));
+            values.push(SqlValue::from(prefix_pattern.clone()));
+            values.push(SqlValue::from(prefix_pattern.clone()));
             values.push(SqlValue::Integer(i64::from(limit)));
 
             let mut song_statement = connection
@@ -1025,102 +1055,221 @@ impl Database {
             }
         }
 
-        hydrate_song_tags(&connection, &mut songs)?;
-
         if text_query.is_empty() {
             return Ok(LibrarySearchResult {
                 songs,
                 albums: Vec::new(),
                 artists: Vec::new(),
+                playlists: Vec::new(),
+                folders: Vec::new(),
             });
         }
 
-        let like_pattern = format!("%{}%", escape_like_pattern(&text_query));
-
-        let mut album_statement = connection
-            .prepare(
-                "
-                SELECT
-                    album,
-                    COALESCE(NULLIF(album_artist, ''), NULLIF(artist, ''), 'Unknown Artist') AS album_artist,
-                    COUNT(*) AS song_count,
-                    COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
-                    MAX(artwork_path) AS artwork_path,
-                    MAX(year) AS year,
-                    MIN(date_added) AS date_added
-                FROM songs
-                WHERE is_missing = 0
-                  AND album LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                GROUP BY
-                    album,
-                    COALESCE(NULLIF(album_artist, ''), NULLIF(artist, ''), 'Unknown Artist')
-                ORDER BY song_count DESC, album COLLATE NOCASE ASC
-                LIMIT ?2
-                ",
-            )
-            .map_err(|error| format!("failed to prepare albums search query: {error}"))?;
-
-        let album_rows = album_statement
-            .query_map(params![like_pattern, limit], |row| {
-                Ok(AlbumListItem {
-                    album: row.get(0)?,
-                    album_artist: row.get(1)?,
-                    song_count: row.get(2)?,
-                    total_duration_ms: row.get(3)?,
-                    artwork_path: row.get(4)?,
-                    year: row.get(5)?,
-                    date_added: row.get(6)?,
-                })
-            })
-            .map_err(|error| format!("failed to execute albums search query: {error}"))?;
-
         let mut albums = Vec::new();
-        for row in album_rows {
-            albums
-                .push(row.map_err(|error| format!("failed to decode album search row: {error}"))?);
+        let mut artists = Vec::new();
+        if let Some(fts_query) = fts_query {
+            let mut album_statement = connection
+                .prepare(
+                    "
+                    WITH matched AS (
+                        SELECT
+                            s.album AS album,
+                            COALESCE(NULLIF(s.album_artist, ''), NULLIF(s.artist, ''), 'Unknown Artist') AS album_artist,
+                            s.duration_ms AS duration_ms,
+                            s.artwork_path AS artwork_path,
+                            s.year AS year,
+                            s.date_added AS date_added
+                        FROM songs_fts
+                        JOIN songs s ON s.rowid = songs_fts.rowid
+                        WHERE s.is_missing = 0
+                          AND songs_fts MATCH ?1
+                    )
+                    SELECT
+                        album,
+                        album_artist,
+                        COUNT(*) AS song_count,
+                        COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
+                        MAX(artwork_path) AS artwork_path,
+                        MAX(year) AS year,
+                        MIN(date_added) AS date_added
+                    FROM matched
+                    GROUP BY album, album_artist
+                    ORDER BY
+                        CASE
+                            WHEN album LIKE ?2 ESCAPE '\\' COLLATE NOCASE THEN 0
+                            ELSE 1
+                        END,
+                        song_count DESC,
+                        album COLLATE NOCASE ASC
+                    LIMIT ?3
+                    ",
+                )
+                .map_err(|error| format!("failed to prepare albums search query: {error}"))?;
+
+            let album_rows = album_statement
+                .query_map(params![fts_query, prefix_pattern, limit], |row| {
+                    Ok(AlbumListItem {
+                        album: row.get(0)?,
+                        album_artist: row.get(1)?,
+                        song_count: row.get(2)?,
+                        total_duration_ms: row.get(3)?,
+                        artwork_path: row.get(4)?,
+                        year: row.get(5)?,
+                        date_added: row.get(6)?,
+                    })
+                })
+                .map_err(|error| format!("failed to execute albums search query: {error}"))?;
+
+            for row in album_rows {
+                albums.push(
+                    row.map_err(|error| format!("failed to decode album search row: {error}"))?,
+                );
+            }
+
+            let mut artist_statement = connection
+                .prepare(
+                    "
+                    WITH matched AS (
+                        SELECT
+                            COALESCE(NULLIF(s.artist, ''), 'Unknown Artist') AS artist,
+                            s.album AS album,
+                            s.play_count AS play_count,
+                            s.artwork_path AS artwork_path
+                        FROM songs_fts
+                        JOIN songs s ON s.rowid = songs_fts.rowid
+                        WHERE s.is_missing = 0
+                          AND songs_fts MATCH ?1
+                    )
+                    SELECT
+                        artist,
+                        COUNT(*) AS song_count,
+                        COUNT(DISTINCT album) AS album_count,
+                        COALESCE(SUM(play_count), 0) AS play_count,
+                        MAX(artwork_path) AS artwork_path
+                    FROM matched
+                    GROUP BY artist
+                    ORDER BY
+                        CASE
+                            WHEN artist LIKE ?2 ESCAPE '\\' COLLATE NOCASE THEN 0
+                            ELSE 1
+                        END,
+                        song_count DESC,
+                        artist COLLATE NOCASE ASC
+                    LIMIT ?3
+                    ",
+                )
+                .map_err(|error| format!("failed to prepare artists search query: {error}"))?;
+
+            let artist_rows = artist_statement
+                .query_map(params![fts_query, prefix_pattern, limit], |row| {
+                    Ok(ArtistListItem {
+                        artist: row.get(0)?,
+                        song_count: row.get(1)?,
+                        album_count: row.get(2)?,
+                        play_count: row.get(3)?,
+                        artwork_path: row.get(4)?,
+                    })
+                })
+                .map_err(|error| format!("failed to execute artists search query: {error}"))?;
+
+            for row in artist_rows {
+                artists.push(
+                    row.map_err(|error| format!("failed to decode artist search row: {error}"))?,
+                );
+            }
         }
 
-        let mut artist_statement = connection
+        let mut playlist_statement = connection
             .prepare(
                 "
                 SELECT
-                    COALESCE(NULLIF(artist, ''), 'Unknown Artist') AS artist,
-                    COUNT(*) AS song_count,
-                    COUNT(DISTINCT album) AS album_count,
-                    COALESCE(SUM(play_count), 0) AS play_count,
-                    MAX(artwork_path) AS artwork_path
-                FROM songs
-                WHERE is_missing = 0
-                  AND artist LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                GROUP BY COALESCE(NULLIF(artist, ''), 'Unknown Artist')
-                ORDER BY song_count DESC, artist COLLATE NOCASE ASC
-                LIMIT ?2
+                    p.id,
+                    p.name,
+                    p.parent_id,
+                    parent.name
+                FROM playlists p
+                LEFT JOIN playlists parent ON parent.id = p.parent_id
+                WHERE p.is_folder = 0
+                  AND p.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                ORDER BY
+                    CASE
+                        WHEN p.name LIKE ?2 ESCAPE '\\' COLLATE NOCASE THEN 0
+                        ELSE 1
+                    END,
+                    p.name COLLATE NOCASE ASC,
+                    p.id ASC
+                LIMIT ?3
                 ",
             )
-            .map_err(|error| format!("failed to prepare artists search query: {error}"))?;
+            .map_err(|error| format!("failed to prepare playlists search query: {error}"))?;
 
-        let artist_rows = artist_statement
-            .query_map(params![like_pattern, limit], |row| {
-                Ok(ArtistListItem {
-                    artist: row.get(0)?,
-                    song_count: row.get(1)?,
-                    album_count: row.get(2)?,
-                    play_count: row.get(3)?,
-                    artwork_path: row.get(4)?,
+        let playlist_rows = playlist_statement
+            .query_map(params![contains_pattern, prefix_pattern, limit], |row| {
+                Ok(PlaylistSearchItem {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    parent_name: row.get(3)?,
+                    is_folder: false,
                 })
             })
-            .map_err(|error| format!("failed to execute artists search query: {error}"))?;
+            .map_err(|error| format!("failed to execute playlists search query: {error}"))?;
 
-        let mut artists = Vec::new();
-        for row in artist_rows {
-            artists
-                .push(row.map_err(|error| format!("failed to decode artist search row: {error}"))?);
+        let mut playlists = Vec::new();
+        for row in playlist_rows {
+            playlists.push(
+                row.map_err(|error| format!("failed to decode playlist search row: {error}"))?,
+            );
+        }
+
+        let mut folder_statement = connection
+            .prepare(
+                "
+                SELECT
+                    p.id,
+                    p.name,
+                    p.parent_id,
+                    parent.name
+                FROM playlists p
+                LEFT JOIN playlists parent ON parent.id = p.parent_id
+                WHERE p.is_folder = 1
+                  AND p.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                ORDER BY
+                    CASE
+                        WHEN p.name LIKE ?2 ESCAPE '\\' COLLATE NOCASE THEN 0
+                        ELSE 1
+                    END,
+                    p.name COLLATE NOCASE ASC,
+                    p.id ASC
+                LIMIT ?3
+                ",
+            )
+            .map_err(|error| format!("failed to prepare folders search query: {error}"))?;
+
+        let folder_rows = folder_statement
+            .query_map(params![contains_pattern, prefix_pattern, limit], |row| {
+                Ok(PlaylistSearchItem {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    parent_name: row.get(3)?,
+                    is_folder: true,
+                })
+            })
+            .map_err(|error| format!("failed to execute folders search query: {error}"))?;
+
+        let mut folders = Vec::new();
+        for row in folder_rows {
+            folders
+                .push(row.map_err(|error| format!("failed to decode folder search row: {error}"))?);
         }
 
         Ok(LibrarySearchResult {
             songs,
             albums,
             artists,
+            playlists,
+            folders,
         })
     }
 
@@ -1512,8 +1661,9 @@ impl Database {
 
         let mut song_ids = Vec::new();
         for row in rows {
-            song_ids
-                .push(row.map_err(|error| format!("failed to decode playlist track id row: {error}"))?);
+            song_ids.push(
+                row.map_err(|error| format!("failed to decode playlist track id row: {error}"))?,
+            );
         }
 
         Ok(song_ids)
@@ -3072,9 +3222,7 @@ fn query_playlist_tracks(
 
     let mut tracks = Vec::new();
     for row in rows {
-        tracks.push(
-            row.map_err(|error| format!("failed to decode playlist track row: {error}"))?,
-        );
+        tracks.push(row.map_err(|error| format!("failed to decode playlist track row: {error}"))?);
     }
 
     let mut songs = tracks
@@ -3728,14 +3876,25 @@ fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
         connection.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])?;
     }
 
+    let migration_7_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !migration_7_applied {
+        connection.execute_batch(MIGRATION_0007)?;
+        connection.execute("INSERT INTO schema_migrations (version) VALUES (7)", [])?;
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fts_query, compute_longest_listening_streak, max_export_tag_columns, DayListenStat,
-        Database, ExportTagRow, run_migrations,
+        build_fts_query, compute_longest_listening_streak, max_export_tag_columns, run_migrations,
+        Database, DayListenStat, ExportTagRow,
     };
     use rusqlite::{params, Connection};
     use std::path::PathBuf;
@@ -3824,6 +3983,24 @@ mod tests {
             )
             .expect("failed to check migration 6");
         assert_eq!(migration_6_applied, 1);
+
+        let migration_7_applied: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 7",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check migration 7");
+        assert_eq!(migration_7_applied, 1);
+
+        let playlist_search_index_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_playlists_is_folder_name_nocase'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check playlist search index");
+        assert_eq!(playlist_search_index_exists, 1);
     }
 
     #[test]
@@ -4232,7 +4409,10 @@ mod tests {
         {
             let connection = db.connection.lock().expect("failed to lock db");
             connection
-                .execute("UPDATE songs SET is_missing = 1 WHERE id = ?1", params!["song-3"])
+                .execute(
+                    "UPDATE songs SET is_missing = 1 WHERE id = ?1",
+                    params!["song-3"],
+                )
                 .expect("failed to mark song missing");
         }
 
@@ -4273,6 +4453,31 @@ mod tests {
     }
 
     #[test]
+    fn search_library_includes_global_playlist_and_folder_hits() {
+        let db = test_db();
+        seed_song(&db, "song-1", "Road Anthem");
+
+        let folder = db
+            .playlist_create("Road Trips", None, true)
+            .expect("failed to create folder");
+        let playlist = db
+            .playlist_create("Road Mix", Some(&folder.id), false)
+            .expect("failed to create playlist");
+
+        let result = db
+            .search_library("road", 25, &[])
+            .expect("failed to search library");
+
+        assert!(result.songs.iter().any(|song| song.id == "song-1"));
+        assert!(result.songs.iter().all(|song| song.tags.is_empty()));
+        assert!(result.playlists.iter().any(|item| item.id == playlist.id));
+        assert!(result.playlists.iter().any(
+            |item| item.id == playlist.id && item.parent_name.as_deref() == Some("Road Trips")
+        ));
+        assert!(result.folders.iter().any(|item| item.id == folder.id));
+    }
+
+    #[test]
     fn supports_phase_4_tags_crud_assignment_and_filters() {
         let db = test_db();
         seed_song(&db, "song-1", "Song 1");
@@ -4308,6 +4513,8 @@ mod tests {
             .search_library("tag:chill", 25, &[])
             .expect("failed to search by inline tag");
         assert_eq!(chill_search.songs.len(), 2);
+        assert_eq!(chill_search.playlists.len(), 0);
+        assert_eq!(chill_search.folders.len(), 0);
 
         let renamed = db
             .tags_rename(&chill.id, "Calm")

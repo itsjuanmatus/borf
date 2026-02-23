@@ -1,7 +1,7 @@
 use crate::audio::AudioEngine;
 use crate::db::{
-    self, AlbumListItem, ArtistListItem, DashboardStats, LibrarySearchResult,
-    PlayHistoryPage, PlaylistMutationResult, PlaylistNode, PlaylistTrackItem, SongListItem, Tag,
+    self, AlbumListItem, ArtistListItem, DashboardStats, LibrarySearchResult, PlayHistoryPage,
+    PlaylistMutationResult, PlaylistNode, PlaylistTrackItem, SongListItem, Tag,
 };
 use crate::imports::itunes::{self, ItunesImportOptions, ItunesImportSummary, ItunesPreview};
 use crate::library;
@@ -115,17 +115,19 @@ pub fn library_get_artist_albums(
 }
 
 #[tauri::command]
-pub fn library_search(
+pub async fn library_search(
     state: State<'_, AppState>,
     query: String,
     limit: Option<u32>,
     tag_ids: Option<Vec<String>>,
 ) -> Result<LibrarySearchResult, String> {
-    state.db.search_library(
-        &query,
-        limit.unwrap_or(25),
-        tag_ids.as_deref().unwrap_or_default(),
-    )
+    let db = state.db.clone();
+    let limit = limit.unwrap_or(25);
+    let tag_ids = tag_ids.unwrap_or_default();
+
+    tauri::async_runtime::spawn_blocking(move || db.search_library(&query, limit, &tag_ids))
+        .await
+        .map_err(|error| format!("search task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -272,7 +274,9 @@ pub fn playlist_get_tracks_page(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<PlaylistTrackItem>, String> {
-    state.db.playlist_get_tracks_page(&playlist_id, limit, offset)
+    state
+        .db
+        .playlist_get_tracks_page(&playlist_id, limit, offset)
 }
 
 #[tauri::command]
@@ -484,8 +488,7 @@ pub fn export_playlist_m3u8(
     let mut file = std::fs::File::create(&output_path)
         .map_err(|error| format!("failed to create M3U8 file: {error}"))?;
 
-    writeln!(file, "#EXTM3U")
-        .map_err(|error| format!("failed to write M3U8 header: {error}"))?;
+    writeln!(file, "#EXTM3U").map_err(|error| format!("failed to write M3U8 header: {error}"))?;
 
     for track in &tracks {
         let duration_secs = track.song.duration_ms / 1000;
@@ -500,14 +503,20 @@ pub fn export_playlist_m3u8(
 }
 
 #[tauri::command]
-pub fn export_play_stats_csv(state: State<'_, AppState>, output_path: String) -> Result<(), String> {
+pub fn export_play_stats_csv(
+    state: State<'_, AppState>,
+    output_path: String,
+) -> Result<(), String> {
     let rows = state.db.export_play_stats_rows()?;
 
     let mut file = std::fs::File::create(&output_path)
         .map_err(|error| format!("failed to create CSV file: {error}"))?;
 
-    writeln!(file, "Title,Artist,Album,Play Count,Total Listen (ms),Last Played,Tags")
-        .map_err(|error| format!("failed to write CSV header: {error}"))?;
+    writeln!(
+        file,
+        "Title,Artist,Album,Play Count,Total Listen (ms),Last Played,Tags"
+    )
+    .map_err(|error| format!("failed to write CSV header: {error}"))?;
 
     for row in &rows {
         writeln!(
@@ -602,8 +611,7 @@ pub fn export_library_hierarchy_md(
                 writeln!(file, "{heading_level} {}", child.name)
                     .map_err(|error| format!("failed to write folder heading: {error}"))?;
                 write_node(file, playlists, Some(&child.id), depth + 1)?;
-                writeln!(file)
-                    .map_err(|error| format!("failed to write newline: {error}"))?;
+                writeln!(file).map_err(|error| format!("failed to write newline: {error}"))?;
             } else {
                 let indent = "  ".repeat(depth);
                 writeln!(file, "{indent}- **{}**", child.name)

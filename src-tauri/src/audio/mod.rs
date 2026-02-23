@@ -209,7 +209,8 @@ impl DecodedTrackCache {
 
         self.order.push_back(key.clone());
         self.total_bytes += size_bytes;
-        self.entries.insert(key, CachedDecodedTrack { track, size_bytes });
+        self.entries
+            .insert(key, CachedDecodedTrack { track, size_bytes });
     }
 
     fn touch(&mut self, key: &str) {
@@ -808,7 +809,8 @@ fn create_streaming_sink(
         );
     }
 
-    let (decoded_track, sink_mode) = if let Some(cached_track) = decoded_track_cache.get(file_path) {
+    let (decoded_track, sink_mode) = if let Some(cached_track) = decoded_track_cache.get(file_path)
+    {
         (cached_track, SinkCreationMode::DecodedCacheHit)
     } else {
         let decoded = decode_track_with_symphonia(file_path)?;

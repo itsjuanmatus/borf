@@ -2,7 +2,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, Folder, FolderOpen, ListMusic } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import type { DragPlaylistPayload, PlaylistNode } from "../../types";
 
@@ -62,11 +62,11 @@ function TreeNode({
           sortable.isOver && "bg-sky/20 ring-1 ring-sky",
           activePlaylistId === node.id && "bg-sky/25 font-medium",
         )}
+        data-playlist-id={node.id}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
         onClick={() => {
           if (node.is_folder) {
             toggleFolder(node.id);
-            return;
           }
           onSelectPlaylist(node.id);
         }}
@@ -129,6 +129,7 @@ export function PlaylistTree({
   onContextMenu,
 }: PlaylistTreeProps) {
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
+  const treeRootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setExpandedFolderIds((previous) => {
@@ -165,6 +166,13 @@ export function PlaylistTree({
 
     return nextMap;
   }, [playlists]);
+  const playlistById = useMemo(() => {
+    const nextMap = new Map<string, PlaylistNode>();
+    for (const playlist of playlists) {
+      nextMap.set(playlist.id, playlist);
+    }
+    return nextMap;
+  }, [playlists]);
 
   const rootNodes = childrenByParent.get(null) ?? [];
   const rootDroppable = useDroppable({ id: "playlist-root" });
@@ -181,9 +189,70 @@ export function PlaylistTree({
     });
   };
 
+  useEffect(() => {
+    if (!activePlaylistId) {
+      return;
+    }
+
+    setExpandedFolderIds((previous) => {
+      let changed = false;
+      const next = new Set(previous);
+      let cursor = playlistById.get(activePlaylistId) ?? null;
+
+      while (cursor) {
+        if (cursor.is_folder && !next.has(cursor.id)) {
+          next.add(cursor.id);
+          changed = true;
+        }
+        if (!cursor.parent_id) {
+          break;
+        }
+        cursor = playlistById.get(cursor.parent_id) ?? null;
+      }
+
+      return changed ? next : previous;
+    });
+  }, [activePlaylistId, playlistById]);
+
+  useEffect(() => {
+    if (!activePlaylistId) {
+      return;
+    }
+
+    let ancestor = playlistById.get(activePlaylistId) ?? null;
+    while (ancestor?.parent_id) {
+      const parent = playlistById.get(ancestor.parent_id) ?? null;
+      if (!parent) {
+        break;
+      }
+      if (parent.is_folder && !expandedFolderIds.has(parent.id)) {
+        return;
+      }
+      ancestor = parent;
+    }
+
+    const treeRoot = treeRootRef.current;
+    if (!treeRoot) {
+      return;
+    }
+
+    const escapedPlaylistId = activePlaylistId.replace(/"/g, '\\"');
+    const activeNode = treeRoot.querySelector<HTMLButtonElement>(
+      `button[data-playlist-id="${escapedPlaylistId}"]`,
+    );
+    if (!activeNode) {
+      return;
+    }
+
+    activeNode.scrollIntoView({ block: "nearest" });
+  }, [activePlaylistId, expandedFolderIds, playlistById]);
+
   return (
     <div
-      ref={rootDroppable.setNodeRef}
+      ref={(node) => {
+        rootDroppable.setNodeRef(node);
+        treeRootRef.current = node;
+      }}
       className={cn(
         "min-h-16 rounded-lg border border-border/60 p-1",
         rootDroppable.isOver && "bg-sky/15 ring-1 ring-sky",

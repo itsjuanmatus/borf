@@ -18,7 +18,9 @@ import {
   Clock3,
   Disc3,
   Download,
+  Folder,
   Library,
+  ListMusic,
   LoaderCircle,
   Search,
   Settings2,
@@ -80,7 +82,8 @@ const SONG_PAGE_SIZE = 250;
 const PLAYLIST_PAGE_SIZE = 250;
 const SONG_IDS_BATCH_SIZE = 400;
 const SONG_ROW_HEIGHT = 54;
-const SEARCH_DEBOUNCE_MS = 150;
+const SEARCH_DEBOUNCE_MS = 320;
+const SEARCH_MIN_TEXT_LENGTH = 2;
 const SEARCH_RESULT_LIMIT = 20;
 const PERF_TRACE_ENABLED = (() => {
   const rawValue = String(import.meta.env.VITE_PERF_TRACE ?? "").toLowerCase();
@@ -150,6 +153,41 @@ function parseQueueSongId(id: string): string | null {
     return null;
   }
   return id.replace("queue-song:", "");
+}
+
+function splitSearchQueryTerms(query: string) {
+  const textTerms: string[] = [];
+  let inlineTagCount = 0;
+
+  for (const rawTerm of query.split(/\s+/)) {
+    if (!rawTerm) {
+      continue;
+    }
+    if (rawTerm.toLowerCase().startsWith("tag:")) {
+      const value = rawTerm.split(":").slice(1).join(":").trim();
+      if (value.length > 0) {
+        inlineTagCount += 1;
+      }
+      continue;
+    }
+    textTerms.push(rawTerm);
+  }
+
+  return {
+    textQuery: textTerms.join(" ").trim(),
+    inlineTagCount,
+  };
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
 function App() {
@@ -306,6 +344,10 @@ function App() {
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
   const queueHydrationTokenRef = useRef(0);
   const pendingQueueHydrationRef = useRef<{ token: number; promise: Promise<void> } | null>(null);
+  const searchInFlightRef = useRef(false);
+  const pendingSearchRef = useRef<{ token: number; query: string; tagIds: string[] } | null>(null);
+  const latestSearchTokenRef = useRef(0);
+  const searchLoopMountedRef = useRef(true);
 
   const [albumGridWidth, setAlbumGridWidth] = useState(920);
   const [playlistReorderMode, setPlaylistReorderMode] = useState(false);
@@ -322,6 +364,24 @@ function App() {
 
   const loadedSongPagesRef = useRef<Set<number>>(new Set());
   const loadingSongPagesRef = useRef<Set<number>>(new Set());
+  const debouncedSearchParts = useMemo(
+    () => splitSearchQueryTerms(debouncedSearchQuery),
+    [debouncedSearchQuery],
+  );
+  const canRunDebouncedSearch = useMemo(() => {
+    if (!debouncedSearchQuery) {
+      return false;
+    }
+    if (selectedTagFilterIds.length > 0 || debouncedSearchParts.inlineTagCount > 0) {
+      return true;
+    }
+    return debouncedSearchParts.textQuery.length >= SEARCH_MIN_TEXT_LENGTH;
+  }, [
+    debouncedSearchParts.inlineTagCount,
+    debouncedSearchParts.textQuery.length,
+    debouncedSearchQuery,
+    selectedTagFilterIds.length,
+  ]);
 
   const songVirtualizer = useVirtualizer({
     count: songCount,
@@ -361,6 +421,19 @@ function App() {
     () => playlists.find((playlist) => playlist.id === activePlaylistId) ?? null,
     [activePlaylistId, playlists],
   );
+  const activeFolderChildren = useMemo(() => {
+    if (!activePlaylist?.is_folder) {
+      return [] as PlaylistNode[];
+    }
+    return playlists
+      .filter((playlist) => playlist.parent_id === activePlaylist.id)
+      .sort((left, right) => {
+        if (left.sort_order !== right.sort_order) {
+          return left.sort_order - right.sort_order;
+        }
+        return left.name.localeCompare(right.name);
+      });
+  }, [activePlaylist, playlists]);
   const activePlaylistTrackIds = useMemo(
     () => (activePlaylistId ? (playlistTrackIdsByPlaylistId[activePlaylistId] ?? []) : []),
     [activePlaylistId, playlistTrackIdsByPlaylistId],
@@ -1878,7 +1951,7 @@ function App() {
   );
 
   const removeSelectedFromActivePlaylist = useCallback(async () => {
-    if (!activePlaylistId || selectedSongIds.length === 0) {
+    if (!activePlaylistId || activePlaylist?.is_folder || selectedSongIds.length === 0) {
       return;
     }
     try {
@@ -1888,14 +1961,20 @@ function App() {
     } catch (error: unknown) {
       setErrorMessage(String(error));
     }
-  }, [activePlaylistId, clearSelection, refreshPlaylistTracks, selectedSongIds]);
+  }, [
+    activePlaylist?.is_folder,
+    activePlaylistId,
+    clearSelection,
+    refreshPlaylistTracks,
+    selectedSongIds,
+  ]);
 
   const currentSong = useMemo(
     () => nowPlaying ?? (currentIndex !== null ? (queue[currentIndex] ?? null) : null),
     [currentIndex, nowPlaying, queue],
   );
   const canReorderActivePlaylist = useMemo(() => {
-    if (!activePlaylistId) {
+    if (!activePlaylistId || activePlaylist?.is_folder) {
       return false;
     }
     if (activePlaylistTrackCount === 0) {
@@ -1904,10 +1983,15 @@ function App() {
     const loadedPages = loadedPagesByPlaylistId[activePlaylistId] ?? [];
     const expectedPages = Math.ceil(activePlaylistTrackCount / PLAYLIST_PAGE_SIZE);
     return loadedPages.length >= expectedPages;
-  }, [activePlaylistId, activePlaylistTrackCount, loadedPagesByPlaylistId]);
+  }, [
+    activePlaylist?.is_folder,
+    activePlaylistId,
+    activePlaylistTrackCount,
+    loadedPagesByPlaylistId,
+  ]);
 
   const togglePlaylistReorderMode = useCallback(() => {
-    if (!activePlaylistId) {
+    if (!activePlaylistId || activePlaylist?.is_folder) {
       return;
     }
     if (playlistReorderMode) {
@@ -1920,7 +2004,13 @@ function App() {
     for (let page = 0; page < totalPages; page += 1) {
       void ensurePlaylistPage(activePlaylistId, page);
     }
-  }, [activePlaylistId, activePlaylistTrackCount, ensurePlaylistPage, playlistReorderMode]);
+  }, [
+    activePlaylist?.is_folder,
+    activePlaylistId,
+    activePlaylistTrackCount,
+    ensurePlaylistPage,
+    playlistReorderMode,
+  ]);
 
   const handleToggleShuffle = useCallback(() => {
     if (queue.length === 0 || !currentSong) {
@@ -1961,6 +2051,54 @@ function App() {
     shuffleEnabled,
   ]);
 
+  const runQueuedSearch = useCallback(() => {
+    if (searchInFlightRef.current) {
+      return;
+    }
+
+    const next = pendingSearchRef.current;
+    if (!next) {
+      setIsSearching(false);
+      return;
+    }
+
+    pendingSearchRef.current = null;
+    searchInFlightRef.current = true;
+
+    void libraryApi
+      .search(next.query, SEARCH_RESULT_LIMIT, next.tagIds)
+      .then((result) => {
+        if (!searchLoopMountedRef.current) {
+          return;
+        }
+        if (next.token !== latestSearchTokenRef.current) {
+          return;
+        }
+        setSearchResults(result);
+      })
+      .catch((error: unknown) => {
+        if (!searchLoopMountedRef.current) {
+          return;
+        }
+        if (next.token === latestSearchTokenRef.current) {
+          setErrorMessage(String(error));
+        }
+      })
+      .finally(() => {
+        searchInFlightRef.current = false;
+        if (!searchLoopMountedRef.current) {
+          return;
+        }
+        if (pendingSearchRef.current) {
+          runQueuedSearch();
+          return;
+        }
+        if (next.token === latestSearchTokenRef.current) {
+          setIsSearching(false);
+        }
+      });
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedSearchQuery(searchQuery.trim());
@@ -1972,36 +2110,40 @@ function App() {
   }, [searchQuery]);
 
   useEffect(() => {
+    searchLoopMountedRef.current = true;
+    return () => {
+      searchLoopMountedRef.current = false;
+      searchInFlightRef.current = false;
+      pendingSearchRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const token = latestSearchTokenRef.current + 1;
+    latestSearchTokenRef.current = token;
+
     if (!debouncedSearchQuery) {
+      pendingSearchRef.current = null;
       setSearchResults(null);
+      setIsSearching(false);
       return;
     }
 
-    let cancelled = false;
-    setIsSearching(true);
+    if (!canRunDebouncedSearch) {
+      pendingSearchRef.current = null;
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
 
-    void libraryApi
-      .search(debouncedSearchQuery, SEARCH_RESULT_LIMIT, selectedTagFilterIds)
-      .then((result) => {
-        if (!cancelled) {
-          setSearchResults(result);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setErrorMessage(String(error));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsSearching(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
+    pendingSearchRef.current = {
+      token,
+      query: debouncedSearchQuery,
+      tagIds: [...selectedTagFilterIds],
     };
-  }, [debouncedSearchQuery, selectedTagFilterIds]);
+    setIsSearching(true);
+    runQueuedSearch();
+  }, [canRunDebouncedSearch, debouncedSearchQuery, runQueuedSearch, selectedTagFilterIds]);
 
   useEffect(() => {
     void audioApi.setVolume(persistedVolume).catch(() => {
@@ -2055,7 +2197,7 @@ function App() {
   }, [refreshTags]);
 
   useEffect(() => {
-    if (activeView !== "playlist" || !activePlaylistId) {
+    if (activeView !== "playlist" || !activePlaylistId || activePlaylist?.is_folder) {
       return;
     }
     const requestId = activePlaylistRequestIdRef.current + 1;
@@ -2063,7 +2205,7 @@ function App() {
     void refreshPlaylistTracks(activePlaylistId, requestId).catch((error: unknown) =>
       setErrorMessage(String(error)),
     );
-  }, [activePlaylistId, activeView, refreshPlaylistTracks]);
+  }, [activePlaylist?.is_folder, activePlaylistId, activeView, refreshPlaylistTracks]);
 
   useEffect(() => {
     if (queueSongIds.length === 0) {
@@ -2287,43 +2429,69 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      const hasModifier = event.metaKey || event.ctrlKey;
+      const lowerKey = event.key.toLowerCase();
+      const inEditableTarget = isEditableKeyboardTarget(event.target);
+
+      if (hasModifier && lowerKey === "k") {
         event.preventDefault();
         searchInputRef.current?.focus();
+        searchInputRef.current?.select();
         return;
       }
 
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
-        if (selectedSongIds.length === 0) {
-          return;
-        }
-        event.preventDefault();
-        copySelectionToClipboard();
-        setClipboardHint(`${selectedSongIds.length} song(s) copied`);
-        return;
-      }
-
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
-        if (clipboardSongIds.length === 0) {
-          return;
-        }
-        event.preventDefault();
-
-        if (activeView !== "playlist" || !activePlaylistId) {
-          setClipboardHint("Paste only works while viewing a playlist");
-          return;
-        }
-
-        void playlistApi
-          .addSongs({ playlistId: activePlaylistId, songIds: clipboardSongIds })
-          .then(() => refreshPlaylistTracks(activePlaylistId))
-          .then(() => setClipboardHint(`${clipboardSongIds.length} song(s) pasted`))
-          .catch((error: unknown) => setErrorMessage(String(error)));
-      }
-
-      if (event.key === "Escape") {
+      if (!hasModifier && event.key === "Escape") {
         closeUpNext();
+        return;
       }
+
+      if (!hasModifier || inEditableTarget) {
+        return;
+      }
+
+      const handlers: Record<string, () => void> = {
+        c: () => {
+          if (selectedSongIds.length === 0) {
+            return;
+          }
+          copySelectionToClipboard();
+          setClipboardHint(`${selectedSongIds.length} song(s) copied`);
+        },
+        v: () => {
+          if (clipboardSongIds.length === 0) {
+            return;
+          }
+
+          if (activeView !== "playlist" || !activePlaylistId || activePlaylist?.is_folder) {
+            setClipboardHint("Paste only works while viewing a playlist");
+            return;
+          }
+
+          void playlistApi
+            .addSongs({ playlistId: activePlaylistId, songIds: clipboardSongIds })
+            .then(() => refreshPlaylistTracks(activePlaylistId))
+            .then(() => setClipboardHint(`${clipboardSongIds.length} song(s) pasted`))
+            .catch((error: unknown) => setErrorMessage(String(error)));
+        },
+      };
+
+      const handler = handlers[lowerKey];
+      if (!handler) {
+        if (event.key === "Escape") {
+          closeUpNext();
+        }
+        return;
+      }
+
+      if (lowerKey === "c" && selectedSongIds.length === 0) {
+        return;
+      }
+      if (lowerKey === "v" && clipboardSongIds.length === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      handler();
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -2331,6 +2499,7 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [
+    activePlaylist?.is_folder,
     activePlaylistId,
     activeView,
     clipboardSongIds,
@@ -2655,7 +2824,9 @@ function App() {
                                     ? "Listening statistics"
                                     : activeView === "settings"
                                       ? `${tags.length.toLocaleString()} tags`
-                                      : `${activePlaylistTrackCount.toLocaleString()} songs`}
+                                      : activePlaylist?.is_folder
+                                        ? `${activeFolderChildren.length.toLocaleString()} item(s)`
+                                        : `${activePlaylistTrackCount.toLocaleString()} songs`}
                         </p>
                       </div>
 
@@ -2667,7 +2838,7 @@ function App() {
                               ref={searchInputRef}
                               value={searchQuery}
                               onChange={(event) => setSearchQuery(event.target.value)}
-                              placeholder="Search songs/albums/artists or tag:chill (Cmd+K)"
+                              placeholder="Search songs/albums/artists/playlists/folders or tag:chill (Cmd+K)"
                               className="pl-10"
                             />
                           </div>
@@ -2746,14 +2917,20 @@ function App() {
 
                     {debouncedSearchQuery ? (
                       <div className="absolute left-6 right-6 top-[100%] z-30 mt-2 max-h-[420px] overflow-auto rounded-xl border border-border bg-white p-3 shadow-lg">
-                        {isSearching ? (
+                        {!canRunDebouncedSearch ? (
+                          <p className="text-xs text-muted">
+                            Type at least {SEARCH_MIN_TEXT_LENGTH} characters, or use tag filters.
+                          </p>
+                        ) : null}
+
+                        {canRunDebouncedSearch && isSearching ? (
                           <div className="flex items-center gap-2 text-sm text-muted">
                             <LoaderCircle className="h-4 w-4 animate-spin" />
                             Searching...
                           </div>
                         ) : null}
 
-                        {!isSearching && searchResults ? (
+                        {canRunDebouncedSearch && !isSearching && searchResults ? (
                           <div className="space-y-4">
                             <section>
                               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -2891,6 +3068,67 @@ function App() {
                                 ))}
                                 {searchResults.artists.length === 0 ? (
                                   <p className="text-xs text-muted">No artist matches.</p>
+                                ) : null}
+                              </div>
+                            </section>
+
+                            <section>
+                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                                Playlists
+                              </p>
+                              <div className="space-y-1">
+                                {searchResults.playlists.map((playlist) => (
+                                  <button
+                                    key={playlist.id}
+                                    type="button"
+                                    className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    onClick={() => {
+                                      openPlaylist(playlist.id);
+                                      setSearchQuery("");
+                                    }}
+                                  >
+                                    <span className="truncate">
+                                      {playlist.name}
+                                      {playlist.parent_name ? (
+                                        <span className="text-muted">
+                                          {" "}
+                                          • {playlist.parent_name}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </button>
+                                ))}
+                                {searchResults.playlists.length === 0 ? (
+                                  <p className="text-xs text-muted">No playlist matches.</p>
+                                ) : null}
+                              </div>
+                            </section>
+
+                            <section>
+                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                                Folders
+                              </p>
+                              <div className="space-y-1">
+                                {searchResults.folders.map((folder) => (
+                                  <button
+                                    key={folder.id}
+                                    type="button"
+                                    className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    onClick={() => {
+                                      openPlaylist(folder.id);
+                                      setSearchQuery("");
+                                    }}
+                                  >
+                                    <span className="truncate">
+                                      {folder.name}
+                                      {folder.parent_name ? (
+                                        <span className="text-muted"> • {folder.parent_name}</span>
+                                      ) : null}
+                                    </span>
+                                  </button>
+                                ))}
+                                {searchResults.folders.length === 0 ? (
+                                  <p className="text-xs text-muted">No folder matches.</p>
                                 ) : null}
                               </div>
                             </section>
@@ -3109,48 +3347,86 @@ function App() {
                     ) : null}
 
                     {activeView === "playlist" ? (
-                      <PlaylistView
-                        playlist={activePlaylist}
-                        tracks={activePlaylistTracksByIndex}
-                        trackCount={activePlaylistTrackCount}
-                        currentSongId={currentSong?.id ?? null}
-                        selectedSongIds={selectedSongIds}
-                        selectedSongIdSet={selectedSongIdSet}
-                        isReorderMode={playlistReorderMode}
-                        canReorder={canReorderActivePlaylist}
-                        onToggleReorderMode={togglePlaylistReorderMode}
-                        onRequestTrackRange={(startIndex, endIndex) => {
-                          if (activePlaylistId) {
-                            requestPlaylistTrackRange(activePlaylistId, startIndex, endIndex);
-                          }
-                        }}
-                        onSelectTrack={handlePlaylistTrackSelection}
-                        onPlayTrack={(index) => {
-                          void playFromPlaylistIndex(index).catch((error: unknown) =>
-                            setErrorMessage(String(error)),
-                          );
-                        }}
-                        onAddToQueue={(songId) => addSongsToQueue([songId])}
-                        onRemoveSelected={() => {
-                          void removeSelectedFromActivePlaylist();
-                        }}
-                        onTrackContextMenu={(event, songId, index) => {
-                          event.preventDefault();
-                          if (!selectedSongIdSet.has(songId)) {
-                            handlePlaylistTrackSelection(songId, index, {
-                              shiftKey: false,
-                              metaKey: false,
+                      activePlaylist?.is_folder ? (
+                        <div className="flex h-full min-h-0 flex-col rounded-xl border border-border bg-white">
+                          <div className="border-b border-border px-4 py-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                              Folder Contents
+                            </p>
+                          </div>
+                          <div className="min-h-0 flex-1 overflow-auto p-2">
+                            {activeFolderChildren.length > 0 ? (
+                              <div className="space-y-1">
+                                {activeFolderChildren.map((child) => (
+                                  <button
+                                    key={child.id}
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-sky/10"
+                                    onClick={() => openPlaylist(child.id)}
+                                  >
+                                    {child.is_folder ? (
+                                      <Folder className="h-4 w-4 shrink-0 text-muted" />
+                                    ) : (
+                                      <ListMusic className="h-4 w-4 shrink-0 text-muted" />
+                                    )}
+                                    <span className="truncate">{child.name}</span>
+                                    <span className="ml-auto text-xs text-muted">
+                                      {child.is_folder ? "Folder" : "Playlist"}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted">
+                                This folder is empty.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <PlaylistView
+                          playlist={activePlaylist}
+                          tracks={activePlaylistTracksByIndex}
+                          trackCount={activePlaylistTrackCount}
+                          currentSongId={currentSong?.id ?? null}
+                          selectedSongIds={selectedSongIds}
+                          selectedSongIdSet={selectedSongIdSet}
+                          isReorderMode={playlistReorderMode}
+                          canReorder={canReorderActivePlaylist}
+                          onToggleReorderMode={togglePlaylistReorderMode}
+                          onRequestTrackRange={(startIndex, endIndex) => {
+                            if (activePlaylistId) {
+                              requestPlaylistTrackRange(activePlaylistId, startIndex, endIndex);
+                            }
+                          }}
+                          onSelectTrack={handlePlaylistTrackSelection}
+                          onPlayTrack={(index) => {
+                            void playFromPlaylistIndex(index).catch((error: unknown) =>
+                              setErrorMessage(String(error)),
+                            );
+                          }}
+                          onAddToQueue={(songId) => addSongsToQueue([songId])}
+                          onRemoveSelected={() => {
+                            void removeSelectedFromActivePlaylist();
+                          }}
+                          onTrackContextMenu={(event, songId, index) => {
+                            event.preventDefault();
+                            if (!selectedSongIdSet.has(songId)) {
+                              handlePlaylistTrackSelection(songId, index, {
+                                shiftKey: false,
+                                metaKey: false,
+                              });
+                            }
+                            setSongContextMenu({
+                              x: event.clientX,
+                              y: event.clientY,
+                              songIds: selectedSongIdSet.has(songId) ? selectedSongIds : [songId],
+                              index,
+                              source: "playlist",
                             });
-                          }
-                          setSongContextMenu({
-                            x: event.clientX,
-                            y: event.clientY,
-                            songIds: selectedSongIdSet.has(songId) ? selectedSongIds : [songId],
-                            index,
-                            source: "playlist",
-                          });
-                        }}
-                      />
+                          }}
+                        />
+                      )
                     ) : null}
 
                     {activeView === "albums" ? (

@@ -60,10 +60,20 @@ export interface ArtistListItem {
   artwork_path: string | null;
 }
 
+export interface PlaylistSearchItem {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  parent_name: string | null;
+  is_folder: boolean;
+}
+
 export interface LibrarySearchResult {
   songs: SongListItem[];
   albums: AlbumListItem[];
   artists: ArtistListItem[];
+  playlists: PlaylistSearchItem[];
+  folders: PlaylistSearchItem[];
 }
 
 export interface QueueState {
