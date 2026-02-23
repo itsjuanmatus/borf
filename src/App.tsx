@@ -14,8 +14,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  CheckCircle2,
   Clipboard,
+  Clock3,
   Disc3,
   Library,
   LoaderCircle,
@@ -25,24 +25,32 @@ import {
   Play,
   Repeat,
   Search,
+  Settings2,
   Shuffle,
   SkipBack,
   SkipForward,
+  Tags as TagsIcon,
   UserRound,
   Volume2,
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import { SongArtwork } from "./components/song-artwork";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Slider } from "./components/ui/slider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
+import { type ImportWizardStep, ItunesImportWizard } from "./features/import/ItunesImportWizard";
+import { EditCommentDialog } from "./features/metadata/EditCommentDialog";
+import { ManageTagsDialog } from "./features/metadata/ManageTagsDialog";
+import { SetCustomStartDialog } from "./features/metadata/SetCustomStartDialog";
 import { DraggableSongButton } from "./features/playlists/DraggableSongButton";
 import { PlaylistSidebar } from "./features/playlists/PlaylistSidebar";
 import { PlaylistView } from "./features/playlists/PlaylistView";
 import { UpNextPanel } from "./features/queue/UpNextPanel";
-import { audioApi, libraryApi, playlistApi } from "./lib/api";
+import { TagsSettingsPanel } from "./features/tags/TagsSettingsPanel";
+import { audioApi, libraryApi, playlistApi, tagsApi } from "./lib/api";
 import { cn } from "./lib/utils";
 import { usePlayerStore } from "./stores/player-store";
 import { usePlaylistStore } from "./stores/playlist-store";
@@ -61,6 +69,7 @@ import type {
   ItunesImportProgress,
   ItunesImportSummary,
   ItunesPreview,
+  LibraryFileChangedEvent,
   LibrarySearchResult,
   PlaylistNode,
   RepeatMode,
@@ -68,14 +77,13 @@ import type {
   SongListItem,
   SongSortField,
   SortOrder,
+  Tag,
 } from "./types";
 
 const SONG_PAGE_SIZE = 250;
-const SONG_ROW_HEIGHT = 44;
+const SONG_ROW_HEIGHT = 54;
 const SEARCH_DEBOUNCE_MS = 150;
 const SEARCH_RESULT_LIMIT = 20;
-
-type ImportWizardStep = 1 | 2 | 3 | 4 | 5;
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) {
@@ -171,13 +179,23 @@ function App() {
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<LibrarySearchResult | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [selectedTagFilterIds, setSelectedTagFilterIds] = useState<string[]>([]);
+  const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
 
   const [songContextMenu, setSongContextMenu] = useState<{
     x: number;
     y: number;
-    songId: string;
+    songIds: string[];
     index: number;
+    source: "library" | "playlist";
   } | null>(null);
+  const [metadataTargetSongIds, setMetadataTargetSongIds] = useState<string[]>([]);
+  const [showManageTagsDialog, setShowManageTagsDialog] = useState(false);
+  const [manageTagsSelection, setManageTagsSelection] = useState<string[]>([]);
+  const [manageTagsBaseline, setManageTagsBaseline] = useState<string[]>([]);
+  const [showEditCommentDialog, setShowEditCommentDialog] = useState(false);
+  const [showCustomStartDialog, setShowCustomStartDialog] = useState(false);
 
   const [showImportWizard, setShowImportWizard] = useState(false);
   const [importWizardStep, setImportWizardStep] = useState<ImportWizardStep>(1);
@@ -249,6 +267,7 @@ function App() {
   const clearSelection = usePlaylistStore((state) => state.clearSelection);
   const clipboardSongIds = usePlaylistStore((state) => state.clipboardSongIds);
   const copySelectionToClipboard = usePlaylistStore((state) => state.copySelectionToClipboard);
+  const setClipboardSongIds = usePlaylistStore((state) => state.setClipboardSongIds);
   const clearClipboard = usePlaylistStore((state) => state.clearClipboard);
 
   const upNext = useQueueStore((state) => state.upNext);
@@ -267,6 +286,8 @@ function App() {
   const songsScrollRef = useRef<HTMLDivElement | null>(null);
   const albumsScrollRef = useRef<HTMLDivElement | null>(null);
   const artistsScrollRef = useRef<HTMLDivElement | null>(null);
+  const tagFilterMenuRootRef = useRef<HTMLDivElement | null>(null);
+  const watcherRefreshTimeoutRef = useRef<number | null>(null);
 
   const [albumGridWidth, setAlbumGridWidth] = useState(920);
 
@@ -314,6 +335,35 @@ function App() {
     () => (activePlaylistId ? (tracksByPlaylistId[activePlaylistId] ?? []) : []),
     [activePlaylistId, tracksByPlaylistId],
   );
+  const songLookupById = useMemo(() => {
+    const lookup = new Map<string, SongListItem>();
+    for (const song of Object.values(songsByIndex)) {
+      lookup.set(song.id, song);
+    }
+    for (const song of queue) {
+      lookup.set(song.id, song);
+    }
+    for (const track of activePlaylistTracks) {
+      lookup.set(track.song.id, track.song);
+    }
+    for (const song of searchResults?.songs ?? []) {
+      lookup.set(song.id, song);
+    }
+    for (const song of albumTracks) {
+      lookup.set(song.id, song);
+    }
+    for (const song of artistAlbumTracks) {
+      lookup.set(song.id, song);
+    }
+    return lookup;
+  }, [activePlaylistTracks, albumTracks, artistAlbumTracks, queue, searchResults, songsByIndex]);
+  const metadataTargetSongs = useMemo(
+    () =>
+      metadataTargetSongIds
+        .map((songId) => songLookupById.get(songId))
+        .filter((song): song is SongListItem => Boolean(song)),
+    [metadataTargetSongIds, songLookupById],
+  );
 
   const resetSongPages = useCallback(() => {
     loadedSongPagesRef.current.clear();
@@ -333,10 +383,12 @@ function App() {
   );
 
   const refreshSongCount = useCallback(async () => {
-    const count = await libraryApi.getSongCount();
+    const count = await libraryApi.getSongCount(selectedTagFilterIds);
+    const totalSongCount =
+      selectedTagFilterIds.length > 0 ? await libraryApi.getSongCount() : count;
     setSongCount(count);
 
-    if (count === 0) {
+    if (count === 0 && totalSongCount === 0) {
       setStatusMessage("No songs found yet. Scan a folder to begin.");
       setSongs([]);
       setQueue([], null);
@@ -345,8 +397,16 @@ function App() {
       setPlaybackState("stopped");
       setPosition(0, 0);
       persistQueue([], null);
+    } else if (count === 0 && selectedTagFilterIds.length > 0) {
+      setStatusMessage("No songs match the current tag filters.");
     } else {
-      setStatusMessage(`Loaded ${count.toLocaleString()} song(s).`);
+      if (selectedTagFilterIds.length > 0) {
+        setStatusMessage(
+          `Loaded ${count.toLocaleString()} song(s) matching ${selectedTagFilterIds.length} tag filter(s).`,
+        );
+      } else {
+        setStatusMessage(`Loaded ${count.toLocaleString()} song(s).`);
+      }
     }
 
     return count;
@@ -358,6 +418,7 @@ function App() {
     setPosition,
     setQueue,
     setSongs,
+    selectedTagFilterIds,
   ]);
 
   const ensureSongPage = useCallback(
@@ -378,6 +439,7 @@ function App() {
           offset,
           sort: songSort,
           order: songOrder,
+          tagIds: selectedTagFilterIds,
         });
 
         setSongsByIndex((previous) => {
@@ -397,11 +459,11 @@ function App() {
         loadingSongPagesRef.current.delete(page);
       }
     },
-    [setSongs, songOrder, songSort],
+    [selectedTagFilterIds, setSongs, songOrder, songSort],
   );
 
   const loadAllSongsForCurrentSort = useCallback(async () => {
-    const total = await libraryApi.getSongCount();
+    const total = await libraryApi.getSongCount(selectedTagFilterIds);
     const result: SongListItem[] = [];
     let offset = 0;
 
@@ -411,6 +473,7 @@ function App() {
         offset,
         sort: songSort,
         order: songOrder,
+        tagIds: selectedTagFilterIds,
       });
       if (chunk.length === 0) {
         break;
@@ -420,7 +483,7 @@ function App() {
     }
 
     return result;
-  }, [songOrder, songSort]);
+  }, [selectedTagFilterIds, songOrder, songSort]);
 
   const refreshAlbums = useCallback(async () => {
     setIsLoadingAlbums(true);
@@ -451,6 +514,11 @@ function App() {
       setIsLoadingArtists(false);
     }
   }, [artistOrder, artistSort]);
+
+  const refreshTags = useCallback(async () => {
+    const result = await tagsApi.list();
+    setTags(result);
+  }, []);
 
   const replaceQueueAndPlay = useCallback(
     async (nextQueue: SongListItem[], startIndex: number, startMs?: number) => {
@@ -670,6 +738,68 @@ function App() {
     setPlaylists(result);
   }, [setPlaylists]);
 
+  const handleCreateTag = useCallback(
+    async (name: string, color: string) => {
+      try {
+        await tagsApi.create(name, color);
+        await refreshTags();
+      } catch (error: unknown) {
+        setErrorMessage(String(error));
+      }
+    },
+    [refreshTags],
+  );
+
+  const handleRenameTag = useCallback(
+    async (tag: Tag) => {
+      const nextName = window.prompt("Rename tag", tag.name);
+      if (nextName === null) {
+        return;
+      }
+      try {
+        await tagsApi.rename(tag.id, nextName);
+        await refreshTags();
+      } catch (error: unknown) {
+        setErrorMessage(String(error));
+      }
+    },
+    [refreshTags],
+  );
+
+  const handleSetTagColor = useCallback(
+    async (tag: Tag) => {
+      const nextColor = window.prompt("Set tag color (#RRGGBB)", tag.color);
+      if (nextColor === null) {
+        return;
+      }
+      try {
+        await tagsApi.setColor(tag.id, nextColor);
+        await refreshTags();
+      } catch (error: unknown) {
+        setErrorMessage(String(error));
+      }
+    },
+    [refreshTags],
+  );
+
+  const handleDeleteTag = useCallback(
+    async (tag: Tag) => {
+      const confirmed = window.confirm(`Delete tag "${tag.name}"?`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await tagsApi.delete(tag.id);
+        setSelectedTagFilterIds((previous) => previous.filter((value) => value !== tag.id));
+        await refreshTags();
+        await refreshSongCount().then(() => ensureSongPage(0));
+      } catch (error: unknown) {
+        setErrorMessage(String(error));
+      }
+    },
+    [ensureSongPage, refreshSongCount, refreshTags],
+  );
+
   const refreshPlaylistTracks = useCallback(
     async (playlistId: string) => {
       const tracks = await playlistApi.getTracks(playlistId);
@@ -785,41 +915,104 @@ function App() {
   const addSongsToQueue = useCallback(
     (songIds: string[]) => {
       const uniqueIds = Array.from(new Set(songIds));
-      const songLookup = new Map<string, SongListItem>();
-      for (const song of Object.values(songsByIndex)) {
-        songLookup.set(song.id, song);
-      }
-      for (const song of queue) {
-        songLookup.set(song.id, song);
-      }
-      for (const track of activePlaylistTracks) {
-        songLookup.set(track.song.id, track.song);
-      }
-      for (const song of searchResults?.songs ?? []) {
-        songLookup.set(song.id, song);
-      }
-      for (const song of albumTracks) {
-        songLookup.set(song.id, song);
-      }
-      for (const song of artistAlbumTracks) {
-        songLookup.set(song.id, song);
-      }
-
       const resolvedSongs = uniqueIds
-        .map((songId) => songLookup.get(songId))
+        .map((songId) => songLookupById.get(songId))
         .filter((song): song is SongListItem => Boolean(song));
       enqueueSongs(resolvedSongs);
     },
-    [
-      activePlaylistTracks,
-      albumTracks,
-      artistAlbumTracks,
-      enqueueSongs,
-      queue,
-      searchResults,
-      songsByIndex,
-    ],
+    [enqueueSongs, songLookupById],
   );
+
+  const openManageTagsForSongs = useCallback(
+    async (songIds: string[]) => {
+      const deduped = Array.from(new Set(songIds));
+      if (deduped.length === 0) {
+        return;
+      }
+
+      let targetSongs = deduped
+        .map((songId) => songLookupById.get(songId))
+        .filter((song): song is SongListItem => Boolean(song));
+
+      try {
+        const freshSongs = await libraryApi.getSongsByIds(deduped);
+        if (freshSongs.length > 0) {
+          targetSongs = freshSongs;
+        }
+      } catch (error: unknown) {
+        setErrorMessage(String(error));
+      }
+
+      if (targetSongs.length === 0) {
+        return;
+      }
+
+      const firstSongTagIds = targetSongs[0]?.tags.map((tag) => tag.id) ?? [];
+      const baseline = firstSongTagIds.filter((tagId) =>
+        targetSongs.every((song) => song.tags.some((tag) => tag.id === tagId)),
+      );
+
+      setMetadataTargetSongIds(deduped);
+      setManageTagsBaseline(baseline);
+      setManageTagsSelection(baseline);
+      setShowManageTagsDialog(true);
+    },
+    [songLookupById],
+  );
+
+  const applyManageTags = async () => {
+    if (metadataTargetSongIds.length === 0) {
+      return;
+    }
+
+    const baselineSet = new Set(manageTagsBaseline);
+    const selectedSet = new Set(manageTagsSelection);
+    const tagsToAssign = manageTagsSelection.filter((tagId) => !baselineSet.has(tagId));
+    const tagsToRemove = manageTagsBaseline.filter((tagId) => !selectedSet.has(tagId));
+
+    try {
+      if (tagsToAssign.length > 0) {
+        await tagsApi.assign(metadataTargetSongIds, tagsToAssign);
+      }
+      if (tagsToRemove.length > 0) {
+        await tagsApi.remove(metadataTargetSongIds, tagsToRemove);
+      }
+      setShowManageTagsDialog(false);
+      await refreshAllViews();
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  };
+
+  const applySongComment = async (comment: string | null) => {
+    if (metadataTargetSongIds.length === 0) {
+      return;
+    }
+    try {
+      await Promise.all(
+        metadataTargetSongIds.map((songId) => libraryApi.updateSongComment(songId, comment)),
+      );
+      setShowEditCommentDialog(false);
+      await refreshAllViews();
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  };
+
+  const applyCustomStart = async (customStartMs: number) => {
+    if (metadataTargetSongIds.length === 0) {
+      return;
+    }
+    try {
+      await Promise.all(
+        metadataTargetSongIds.map((songId) => libraryApi.setSongCustomStart(songId, customStartMs)),
+      );
+      setShowCustomStartDialog(false);
+      await refreshAllViews();
+    } catch (error: unknown) {
+      setErrorMessage(String(error));
+    }
+  };
 
   const handlePlaylistTrackSelection = useCallback(
     (
@@ -1056,13 +1249,26 @@ function App() {
     resetSongPages();
     await refreshSongCount();
     await ensureSongPage(0);
-    await Promise.all([refreshAlbums(), refreshArtists(), refreshPlaylists()]);
+
+    const refreshTasks: Array<Promise<unknown>> = [
+      refreshAlbums(),
+      refreshArtists(),
+      refreshPlaylists(),
+      refreshTags(),
+    ];
+    if (activePlaylistId) {
+      refreshTasks.push(refreshPlaylistTracks(activePlaylistId));
+    }
+    await Promise.all(refreshTasks);
   }, [
+    activePlaylistId,
     ensureSongPage,
     refreshAlbums,
     refreshArtists,
     refreshPlaylists,
+    refreshPlaylistTracks,
     refreshSongCount,
+    refreshTags,
     resetSongPages,
   ]);
 
@@ -1279,7 +1485,7 @@ function App() {
     setIsSearching(true);
 
     void libraryApi
-      .search(debouncedSearchQuery, SEARCH_RESULT_LIMIT)
+      .search(debouncedSearchQuery, SEARCH_RESULT_LIMIT, selectedTagFilterIds)
       .then((result) => {
         if (!cancelled) {
           setSearchResults(result);
@@ -1299,7 +1505,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedSearchQuery]);
+  }, [debouncedSearchQuery, selectedTagFilterIds]);
 
   useEffect(() => {
     void audioApi.setVolume(persistedVolume).catch(() => {
@@ -1308,10 +1514,11 @@ function App() {
   }, [persistedVolume]);
 
   useEffect(() => {
+    resetSongPages();
     void refreshSongCount()
       .then(() => ensureSongPage(0))
       .catch((error: unknown) => setErrorMessage(String(error)));
-  }, [ensureSongPage, refreshSongCount]);
+  }, [ensureSongPage, refreshSongCount, resetSongPages]);
 
   useEffect(() => {
     if (activeView === "albums") {
@@ -1328,6 +1535,10 @@ function App() {
   useEffect(() => {
     void refreshPlaylists().catch((error: unknown) => setErrorMessage(String(error)));
   }, [refreshPlaylists]);
+
+  useEffect(() => {
+    void refreshTags().catch((error: unknown) => setErrorMessage(String(error)));
+  }, [refreshTags]);
 
   useEffect(() => {
     if (activeView !== "playlist" || !activePlaylistId) {
@@ -1436,16 +1647,36 @@ function App() {
       listen<ItunesImportProgress>("import:itunes-progress", (event) => {
         setItunesProgress(event.payload);
       }),
+      listen<LibraryFileChangedEvent>("library:file-changed", (event) => {
+        if (isScanning) {
+          return;
+        }
+        setStatusMessage(
+          `Auto-sync: ${event.payload.reason} (${event.payload.changed_paths.length} path(s))`,
+        );
+
+        if (watcherRefreshTimeoutRef.current !== null) {
+          window.clearTimeout(watcherRefreshTimeoutRef.current);
+        }
+        watcherRefreshTimeoutRef.current = window.setTimeout(() => {
+          void refreshAllViews().catch((error: unknown) => setErrorMessage(String(error)));
+          watcherRefreshTimeoutRef.current = null;
+        }, 700);
+      }),
     ];
 
     return () => {
+      if (watcherRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(watcherRefreshTimeoutRef.current);
+        watcherRefreshTimeoutRef.current = null;
+      }
       void Promise.all(unlisteners).then((callbacks) => {
         for (const callback of callbacks) {
           callback();
         }
       });
     };
-  }, [playNext, setPlaybackState, setPosition]);
+  }, [isScanning, playNext, refreshAllViews, setPlaybackState, setPosition]);
 
   useEffect(() => {
     const unlisteners: Array<Promise<UnlistenFn>> = [
@@ -1543,6 +1774,23 @@ function App() {
     };
   }, [songContextMenu]);
 
+  useEffect(() => {
+    if (!showTagFilterMenu) {
+      return;
+    }
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (tagFilterMenuRootRef.current?.contains(target)) {
+        return;
+      }
+      setShowTagFilterMenu(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => {
+      window.removeEventListener("mousedown", close);
+    };
+  }, [showTagFilterMenu]);
+
   const progressPercent = useMemo(() => {
     if (!scanProgress || scanProgress.total === 0) {
       return 0;
@@ -1588,7 +1836,7 @@ function App() {
                     </div>
                     <div>
                       <h1 className="text-lg font-semibold tracking-tight">borf</h1>
-                      <p className="text-xs text-muted">Phase 3 playlists + queue</p>
+                      <p className="text-xs text-muted">Phase 4 metadata + tags + auto-sync</p>
                     </div>
                   </div>
 
@@ -1651,6 +1899,26 @@ function App() {
                     >
                       <UserRound className="h-4 w-4" />
                       Artists
+                    </button>
+
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        activeView === "settings"
+                          ? "bg-sky/30 text-text"
+                          : "text-muted hover:bg-sky/10",
+                      )}
+                      onClick={() => {
+                        setActiveView("settings");
+                        setActivePlaylistId(null);
+                        clearSelection();
+                        setSelectedAlbum(null);
+                        setSelectedArtist(null);
+                      }}
+                    >
+                      <Settings2 className="h-4 w-4" />
+                      Settings
                     </button>
                   </div>
 
@@ -1719,7 +1987,9 @@ function App() {
                               ? "Albums"
                               : activeView === "artists"
                                 ? "Artists"
-                                : (activePlaylist?.name ?? "Playlist")}
+                                : activeView === "settings"
+                                  ? "Settings"
+                                  : (activePlaylist?.name ?? "Playlist")}
                         </h2>
                         <p className="text-sm text-muted">
                           {activeView === "songs"
@@ -1728,21 +1998,94 @@ function App() {
                               ? `${albums.length.toLocaleString()} albums`
                               : activeView === "artists"
                                 ? `${artists.length.toLocaleString()} artists`
-                                : `${activePlaylistTracks.length.toLocaleString()} songs`}
+                                : activeView === "settings"
+                                  ? `${tags.length.toLocaleString()} tags`
+                                  : `${activePlaylistTracks.length.toLocaleString()} songs`}
                         </p>
                       </div>
 
-                      <div className="w-full max-w-xl">
-                        <div className="relative">
-                          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-                          <Input
-                            ref={searchInputRef}
-                            value={searchQuery}
-                            onChange={(event) => setSearchQuery(event.target.value)}
-                            placeholder="Search songs, albums, artists (Cmd+K)"
-                            className="pl-10"
-                          />
+                      <div className="relative w-full max-w-xl" ref={tagFilterMenuRootRef}>
+                        <div className="flex gap-2">
+                          <div className="relative min-w-0 flex-1">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                            <Input
+                              ref={searchInputRef}
+                              value={searchQuery}
+                              onChange={(event) => setSearchQuery(event.target.value)}
+                              placeholder="Search songs/albums/artists or tag:chill (Cmd+K)"
+                              className="pl-10"
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            variant={selectedTagFilterIds.length > 0 ? "default" : "secondary"}
+                            size="sm"
+                            className="shrink-0"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setShowTagFilterMenu((previous) => !previous);
+                            }}
+                          >
+                            <TagsIcon className="mr-1 h-3.5 w-3.5" />
+                            Tags
+                            {selectedTagFilterIds.length > 0
+                              ? ` (${selectedTagFilterIds.length})`
+                              : ""}
+                          </Button>
                         </div>
+                        {showTagFilterMenu ? (
+                          <div className="absolute right-0 top-[110%] z-40 w-64 rounded-xl border border-border bg-white p-3 shadow-lg">
+                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                              Filter Songs By Tags
+                            </p>
+                            <div className="max-h-52 space-y-1 overflow-auto">
+                              {tags.length === 0 ? (
+                                <p className="text-xs text-muted">No tags available.</p>
+                              ) : (
+                                tags.map((tag) => (
+                                  <label key={tag.id} className="flex items-center gap-2 text-sm">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedTagFilterIds.includes(tag.id)}
+                                      onChange={(event) => {
+                                        if (event.target.checked) {
+                                          setSelectedTagFilterIds((previous) => [
+                                            ...new Set([...previous, tag.id]),
+                                          ]);
+                                        } else {
+                                          setSelectedTagFilterIds((previous) =>
+                                            previous.filter((value) => value !== tag.id),
+                                          );
+                                        }
+                                      }}
+                                    />
+                                    <span
+                                      className="h-3.5 w-3.5 rounded-full border border-border/70"
+                                      style={{ backgroundColor: tag.color }}
+                                    />
+                                    <span className="truncate">{tag.name}</span>
+                                  </label>
+                                ))
+                              )}
+                            </div>
+                            <div className="mt-3 flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setSelectedTagFilterIds([])}
+                              >
+                                Clear
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => setShowTagFilterMenu(false)}
+                              >
+                                Done
+                              </Button>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
@@ -1771,7 +2114,7 @@ function App() {
                                       songIds: [song.id],
                                       source: "search",
                                     }}
-                                    className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="group/song flex w-full select-none items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
                                     onClick={() => {
                                       setQueueSourceSongs(searchResults.songs);
                                       setQueueSourceLabel("Search Results");
@@ -1781,9 +2124,27 @@ function App() {
                                       setSearchQuery("");
                                     }}
                                   >
-                                    <span className="truncate">
-                                      {song.title}{" "}
-                                      <span className="text-muted">• {song.artist}</span>
+                                    <span className="flex min-w-0 items-center gap-2">
+                                      <SongArtwork
+                                        artworkPath={song.artwork_path}
+                                        sizeClassName="h-8 w-8"
+                                        playLabel={`Play ${song.title}`}
+                                        onPlay={() => {
+                                          setQueueSourceSongs(searchResults.songs);
+                                          setQueueSourceLabel("Search Results");
+                                          void replaceQueueAndPlay(
+                                            searchResults.songs,
+                                            index,
+                                          ).catch((error: unknown) =>
+                                            setErrorMessage(String(error)),
+                                          );
+                                          setSearchQuery("");
+                                        }}
+                                      />
+                                      <span className="truncate">
+                                        {song.title}{" "}
+                                        <span className="text-muted">• {song.artist}</span>
+                                      </span>
                                     </span>
                                     <span className="flex items-center gap-2">
                                       <Button
@@ -1994,21 +2355,27 @@ function App() {
                                         return;
                                       }
                                       event.preventDefault();
-                                      selectSongs({
-                                        songId: song.id,
-                                        songIndex: 0,
-                                        orderedSongIds: [song.id],
-                                        mode: "single",
-                                      });
+                                      if (!selectedSongIds.includes(song.id)) {
+                                        selectSongs({
+                                          songId: song.id,
+                                          songIndex: 0,
+                                          orderedSongIds: [song.id],
+                                          mode: "single",
+                                        });
+                                      }
+                                      const songIds = selectedSongIds.includes(song.id)
+                                        ? selectedSongIds
+                                        : [song.id];
                                       setSongContextMenu({
                                         x: event.clientX,
                                         y: event.clientY,
-                                        songId: song.id,
+                                        songIds,
                                         index: virtualRow.index,
+                                        source: "library",
                                       });
                                     }}
                                     className={cn(
-                                      "grid h-full w-full grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] items-center gap-3 border-b border-border/60 px-3 text-left text-sm transition-colors",
+                                      "group/song grid h-full w-full select-none grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] items-center gap-3 border-b border-border/60 px-3 text-left text-sm transition-colors",
                                       "hover:bg-sky/15",
                                       isSelected && "bg-sky/20",
                                       isActive && "bg-blossom/25",
@@ -2017,7 +2384,40 @@ function App() {
                                     {song ? (
                                       <>
                                         <span className="text-muted">{virtualRow.index + 1}</span>
-                                        <span className="truncate font-medium">{song.title}</span>
+                                        <div className="flex min-w-0 items-center gap-2">
+                                          <SongArtwork
+                                            artworkPath={song.artwork_path}
+                                            playLabel={`Play ${song.title}`}
+                                            onPlay={() => {
+                                              void playFromSongsIndex(virtualRow.index).catch(
+                                                (error: unknown) => setErrorMessage(String(error)),
+                                              );
+                                            }}
+                                          />
+                                          <div className="min-w-0">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="truncate font-medium">
+                                                {song.title}
+                                              </span>
+                                              {song.custom_start_ms > 0 ? (
+                                                <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted" />
+                                              ) : null}
+                                            </div>
+                                            {song.tags.length > 0 ? (
+                                              <div className="mt-1 flex flex-wrap gap-1">
+                                                {song.tags.slice(0, 3).map((tag) => (
+                                                  <span
+                                                    key={tag.id}
+                                                    className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] leading-none"
+                                                    style={{ backgroundColor: `${tag.color}40` }}
+                                                  >
+                                                    {tag.name}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        </div>
                                         <span className="truncate text-muted">{song.artist}</span>
                                         <span className="truncate text-muted">{song.album}</span>
                                         <span className="text-right text-muted">
@@ -2062,6 +2462,22 @@ function App() {
                         onRemoveSelected={() => {
                           void removeSelectedFromActivePlaylist();
                         }}
+                        onTrackContextMenu={(event, songId, index) => {
+                          event.preventDefault();
+                          if (!selectedSongIds.includes(songId)) {
+                            handlePlaylistTrackSelection(songId, index, {
+                              shiftKey: false,
+                              metaKey: false,
+                            });
+                          }
+                          setSongContextMenu({
+                            x: event.clientX,
+                            y: event.clientY,
+                            songIds: selectedSongIds.includes(songId) ? selectedSongIds : [songId],
+                            index,
+                            source: "playlist",
+                          });
+                        }}
                       />
                     ) : null}
 
@@ -2094,7 +2510,7 @@ function App() {
                                     key={song.id}
                                     type="button"
                                     className={cn(
-                                      "grid w-full grid-cols-[48px_2fr_1.6fr_120px] gap-3 border-b border-border/60 px-3 py-2 text-left text-sm hover:bg-sky/15",
+                                      "group/song grid w-full select-none grid-cols-[48px_2fr_1.6fr_120px] gap-3 border-b border-border/60 px-3 py-2 text-left text-sm hover:bg-sky/15",
                                       currentSong?.id === song.id && "bg-blossom/25",
                                     )}
                                     onDoubleClick={() => {
@@ -2106,7 +2522,20 @@ function App() {
                                     }}
                                   >
                                     <span className="text-muted">{index + 1}</span>
-                                    <span className="truncate font-medium">{song.title}</span>
+                                    <div className="flex min-w-0 items-center gap-2">
+                                      <SongArtwork
+                                        artworkPath={song.artwork_path}
+                                        playLabel={`Play ${song.title}`}
+                                        onPlay={() => {
+                                          setQueueSourceSongs(albumTracks);
+                                          setQueueSourceLabel(selectedAlbum?.album ?? "Album");
+                                          void replaceQueueAndPlay(albumTracks, index).catch(
+                                            (error: unknown) => setErrorMessage(String(error)),
+                                          );
+                                        }}
+                                      />
+                                      <span className="truncate font-medium">{song.title}</span>
+                                    </div>
                                     <span className="truncate text-muted">{song.artist}</span>
                                     <span className="text-right text-muted">
                                       {formatDuration(song.duration_ms)}
@@ -2317,7 +2746,7 @@ function App() {
                                       key={song.id}
                                       type="button"
                                       className={cn(
-                                        "grid w-full grid-cols-[48px_2fr_120px] gap-3 border-b border-border/60 px-3 py-2 text-left text-sm hover:bg-sky/15",
+                                        "group/song grid w-full select-none grid-cols-[48px_2fr_120px] gap-3 border-b border-border/60 px-3 py-2 text-left text-sm hover:bg-sky/15",
                                         currentSong?.id === song.id && "bg-blossom/25",
                                       )}
                                       onDoubleClick={() => {
@@ -2329,7 +2758,25 @@ function App() {
                                       }}
                                     >
                                       <span className="text-muted">{index + 1}</span>
-                                      <span className="truncate font-medium">{song.title}</span>
+                                      <div className="flex min-w-0 items-center gap-2">
+                                        <SongArtwork
+                                          artworkPath={song.artwork_path}
+                                          playLabel={`Play ${song.title}`}
+                                          onPlay={() => {
+                                            setQueueSourceSongs(artistAlbumTracks);
+                                            setQueueSourceLabel(
+                                              selectedArtistAlbum?.album ?? "Artist",
+                                            );
+                                            void replaceQueueAndPlay(
+                                              artistAlbumTracks,
+                                              index,
+                                            ).catch((error: unknown) =>
+                                              setErrorMessage(String(error)),
+                                            );
+                                          }}
+                                        />
+                                        <span className="truncate font-medium">{song.title}</span>
+                                      </div>
                                       <span className="text-right text-muted">
                                         {formatDuration(song.duration_ms)}
                                       </span>
@@ -2340,6 +2787,20 @@ function App() {
                             )}
                           </div>
                         )}
+                      </div>
+                    ) : null}
+
+                    {activeView === "settings" ? (
+                      <div className="h-full rounded-xl border border-border bg-white p-4">
+                        <div className="h-full overflow-auto">
+                          <TagsSettingsPanel
+                            tags={tags}
+                            onCreateTag={handleCreateTag}
+                            onRenameTag={handleRenameTag}
+                            onSetTagColor={handleSetTagColor}
+                            onDeleteTag={handleDeleteTag}
+                          />
+                        </div>
                       </div>
                     ) : null}
                   </section>
@@ -2530,9 +2991,15 @@ function App() {
                 type="button"
                 className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
                 onClick={() => {
-                  void playFromSongsIndex(songContextMenu.index).catch((error: unknown) =>
-                    setErrorMessage(String(error)),
-                  );
+                  if (songContextMenu.source === "playlist") {
+                    void playFromPlaylistIndex(songContextMenu.index).catch((error: unknown) =>
+                      setErrorMessage(String(error)),
+                    );
+                  } else {
+                    void playFromSongsIndex(songContextMenu.index).catch((error: unknown) =>
+                      setErrorMessage(String(error)),
+                    );
+                  }
                   setSongContextMenu(null);
                 }}
               >
@@ -2542,9 +3009,7 @@ function App() {
                 type="button"
                 className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
                 onClick={() => {
-                  const songIds =
-                    selectedSongIds.length > 0 ? selectedSongIds : [songContextMenu.songId];
-                  addSongsToQueue(songIds);
+                  addSongsToQueue(songContextMenu.songIds);
                   setSongContextMenu(null);
                 }}
               >
@@ -2554,208 +3019,108 @@ function App() {
                 type="button"
                 className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
                 onClick={() => {
-                  copySelectionToClipboard();
-                  setClipboardHint(`${selectedSongIds.length || 1} song(s) copied`);
+                  setClipboardSongIds(songContextMenu.songIds);
+                  setClipboardHint(`${songContextMenu.songIds.length} song(s) copied`);
                   setSongContextMenu(null);
                 }}
               >
                 Copy
               </button>
+              <button
+                type="button"
+                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                onClick={() => {
+                  void openManageTagsForSongs(songContextMenu.songIds);
+                  setSongContextMenu(null);
+                }}
+              >
+                Manage Tags
+              </button>
+              <button
+                type="button"
+                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                onClick={() => {
+                  setMetadataTargetSongIds(songContextMenu.songIds);
+                  setShowEditCommentDialog(true);
+                  setSongContextMenu(null);
+                }}
+              >
+                Edit Comment
+              </button>
+              <button
+                type="button"
+                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                onClick={() => {
+                  setMetadataTargetSongIds(songContextMenu.songIds);
+                  setShowCustomStartDialog(true);
+                  setSongContextMenu(null);
+                }}
+              >
+                Set Custom Start Time
+              </button>
             </div>
           ) : null}
-
-          {showImportWizard ? (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/40 p-4">
-              <div className="w-full max-w-2xl rounded-2xl border border-border bg-white p-6 shadow-xl">
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-lg font-semibold">Import iTunes Library</h3>
-                    <p className="text-sm text-muted">Step {importWizardStep} of 5</p>
-                  </div>
-                  <Button variant="secondary" onClick={resetImportWizard}>
-                    Close
-                  </Button>
-                </div>
-
-                {importWizardStep === 1 ? (
-                  <div className="space-y-4">
-                    <p className="text-sm text-muted">
-                      Select your iTunes <code>Library.xml</code> file to start.
-                    </p>
-                    <Button onClick={() => void handlePickItunesXml()}>Select Library.xml</Button>
-                    {itunesXmlPath ? <p className="text-xs text-muted">{itunesXmlPath}</p> : null}
-                  </div>
-                ) : null}
-
-                {importWizardStep === 2 ? (
-                  <div className="space-y-4">
-                    <p className="text-sm text-muted">Preview detected content before importing.</p>
-                    {itunesPreview ? (
-                      <div className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-surface p-4 text-sm">
-                        <p>Tracks found: {itunesPreview.tracks_found.toLocaleString()}</p>
-                        <p>Playlists found: {itunesPreview.playlists_found.toLocaleString()}</p>
-                        <p>Matched tracks: {itunesPreview.matched_tracks.toLocaleString()}</p>
-                        <p>Unmatched tracks: {itunesPreview.unmatched_tracks.toLocaleString()}</p>
-                        <p>Smart playlists skipped: {itunesPreview.skipped_smart_playlists}</p>
-                        <p>System playlists skipped: {itunesPreview.skipped_system_playlists}</p>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted">Loading preview...</p>
-                    )}
-
-                    <div className="flex justify-end gap-2">
-                      <Button variant="secondary" onClick={() => setImportWizardStep(1)}>
-                        Back
-                      </Button>
-                      <Button onClick={() => setImportWizardStep(3)} disabled={!itunesPreview}>
-                        Next
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {importWizardStep === 3 ? (
-                  <div className="space-y-4">
-                    <p className="text-sm text-muted">Choose what to import from iTunes.</p>
-
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={itunesOptions.import_play_counts}
-                        onChange={(event) =>
-                          setItunesOptions((previous) => ({
-                            ...previous,
-                            import_play_counts: event.target.checked,
-                          }))
-                        }
-                      />
-                      Play counts and skip counts
-                    </label>
-
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={itunesOptions.import_ratings}
-                        onChange={(event) =>
-                          setItunesOptions((previous) => ({
-                            ...previous,
-                            import_ratings: event.target.checked,
-                          }))
-                        }
-                      />
-                      Ratings
-                    </label>
-
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={itunesOptions.import_comments}
-                        onChange={(event) =>
-                          setItunesOptions((previous) => ({
-                            ...previous,
-                            import_comments: event.target.checked,
-                          }))
-                        }
-                      />
-                      Comments
-                    </label>
-
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={itunesOptions.import_playlists}
-                        onChange={(event) =>
-                          setItunesOptions((previous) => ({
-                            ...previous,
-                            import_playlists: event.target.checked,
-                          }))
-                        }
-                      />
-                      Playlists
-                    </label>
-
-                    <div className="flex justify-end gap-2">
-                      <Button variant="secondary" onClick={() => setImportWizardStep(2)}>
-                        Back
-                      </Button>
-                      <Button onClick={() => void handleRunItunesImport()}>Run Import</Button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {importWizardStep === 4 ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-sm text-muted">
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                      Import in progress...
-                    </div>
-
-                    {itunesProgress ? (
-                      <div className="space-y-2 rounded-xl border border-border bg-surface p-4 text-sm">
-                        <p className="font-medium">Stage: {itunesProgress.stage}</p>
-                        <div className="h-2 w-full overflow-hidden rounded-full bg-sky/30">
-                          <div
-                            className="h-full rounded-full bg-accent transition-[width] duration-200"
-                            style={{ width: `${importProgressPercent}%` }}
-                          />
-                        </div>
-                        <p>
-                          {itunesProgress.processed.toLocaleString()} /{" "}
-                          {itunesProgress.total.toLocaleString()}
-                        </p>
-                        <p>
-                          Matched: {itunesProgress.matched.toLocaleString()} • Unmatched:{" "}
-                          {itunesProgress.unmatched.toLocaleString()}
-                        </p>
-                        {itunesProgress.current_item ? (
-                          <p className="truncate text-xs text-muted">
-                            {itunesProgress.current_item}
-                          </p>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    {!isImporting ? (
-                      <div className="flex justify-end">
-                        <Button onClick={() => setImportWizardStep(5)}>Continue</Button>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {importWizardStep === 5 ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-sm text-green-700">
-                      <CheckCircle2 className="h-4 w-4" />
-                      Import complete
-                    </div>
-
-                    {itunesSummary ? (
-                      <div className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-surface p-4 text-sm">
-                        <p>Tracks found: {itunesSummary.tracks_found.toLocaleString()}</p>
-                        <p>Matched tracks: {itunesSummary.matched_tracks.toLocaleString()}</p>
-                        <p>Unmatched tracks: {itunesSummary.unmatched_tracks.toLocaleString()}</p>
-                        <p>
-                          Song updates imported:{" "}
-                          {itunesSummary.imported_song_updates.toLocaleString()}
-                        </p>
-                        <p>
-                          Playlists imported: {itunesSummary.imported_playlists.toLocaleString()}
-                        </p>
-                        <p>Playlists scanned: {itunesSummary.playlists_found.toLocaleString()}</p>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted">No summary data available.</p>
-                    )}
-
-                    <div className="flex justify-end">
-                      <Button onClick={resetImportWizard}>Done</Button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
+          <ManageTagsDialog
+            isOpen={showManageTagsDialog}
+            tags={tags}
+            selectedTagIds={manageTagsSelection}
+            targetSongCount={metadataTargetSongIds.length}
+            onToggleTag={(tagId, checked) => {
+              if (checked) {
+                setManageTagsSelection((previous) => [...new Set([...previous, tagId])]);
+              } else {
+                setManageTagsSelection((previous) => previous.filter((value) => value !== tagId));
+              }
+            }}
+            onClose={() => setShowManageTagsDialog(false)}
+            onApply={() => {
+              void applyManageTags();
+            }}
+          />
+          <EditCommentDialog
+            isOpen={showEditCommentDialog}
+            initialComment={metadataTargetSongs[0]?.comment ?? null}
+            targetSongCount={metadataTargetSongIds.length}
+            onClose={() => setShowEditCommentDialog(false)}
+            onSave={(comment) => {
+              void applySongComment(comment);
+            }}
+          />
+          <SetCustomStartDialog
+            isOpen={showCustomStartDialog}
+            initialMs={metadataTargetSongs[0]?.custom_start_ms ?? 0}
+            currentPositionMs={positionMs}
+            targetSongCount={metadataTargetSongIds.length}
+            onClose={() => setShowCustomStartDialog(false)}
+            onSave={(customStartMs) => {
+              void applyCustomStart(customStartMs);
+            }}
+          />
+          <ItunesImportWizard
+            isOpen={showImportWizard}
+            step={importWizardStep}
+            xmlPath={itunesXmlPath}
+            preview={itunesPreview}
+            options={itunesOptions}
+            progress={itunesProgress}
+            summary={itunesSummary}
+            isImporting={isImporting}
+            importProgressPercent={importProgressPercent}
+            onClose={resetImportWizard}
+            onPickXml={() => {
+              void handlePickItunesXml();
+            }}
+            onSetStep={setImportWizardStep}
+            onToggleOption={(key, value) =>
+              setItunesOptions((previous) => ({
+                ...previous,
+                [key]: value,
+              }))
+            }
+            onRunImport={() => {
+              void handleRunItunesImport();
+            }}
+          />
         </div>
 
         <DragOverlay>

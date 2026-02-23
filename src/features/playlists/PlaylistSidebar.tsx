@@ -1,5 +1,5 @@
 import { FolderPlus, Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import type { PlaylistNode } from "../../types";
 import { PlaylistContextMenu } from "./PlaylistContextMenu";
@@ -31,6 +31,33 @@ export function PlaylistSidebar({
     y: number;
     target: PlaylistNode | null;
   } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (contextMenuRef.current?.contains(target)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [contextMenu]);
 
   return (
     <section className="mt-4 rounded-xl border border-border bg-white p-3">
@@ -70,17 +97,19 @@ export function PlaylistSidebar({
       />
 
       {contextMenu ? (
-        <PlaylistContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          target={contextMenu.target}
-          onClose={() => setContextMenu(null)}
-          onCreatePlaylist={onCreatePlaylist}
-          onCreateFolder={onCreateFolder}
-          onRename={onRenamePlaylist}
-          onDelete={onDeletePlaylist}
-          onDuplicate={onDuplicatePlaylist}
-        />
+        <div ref={contextMenuRef}>
+          <PlaylistContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            target={contextMenu.target}
+            onClose={() => setContextMenu(null)}
+            onCreatePlaylist={onCreatePlaylist}
+            onCreateFolder={onCreateFolder}
+            onRename={onRenamePlaylist}
+            onDelete={onDeletePlaylist}
+            onDuplicate={onDuplicatePlaylist}
+          />
+        </div>
       ) : null}
     </section>
   );

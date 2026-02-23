@@ -32,11 +32,11 @@ export function DraggableSongButton({
         transform: CSS.Translate.toString(draggable.transform),
         opacity: draggable.isDragging ? 0.65 : 1,
       }}
+      {...draggable.attributes}
+      {...draggable.listeners}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
-      {...draggable.attributes}
-      {...draggable.listeners}
     >
       {children}
     </button>

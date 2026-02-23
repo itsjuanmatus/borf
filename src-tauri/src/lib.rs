@@ -47,8 +47,18 @@ pub fn run() {
                 audio::AudioEngine::new(app_handle, initial_volume)
                     .expect("failed to initialize audio engine"),
             );
+            let library_watcher = Arc::new(
+                library::LibraryWatcher::new(app.handle().clone(), database.clone())
+                    .expect("failed to initialize library watcher"),
+            );
+            for root in database
+                .get_library_roots()
+                .expect("failed to resolve persisted library roots")
+            {
+                let _ = library_watcher.watch_root(std::path::PathBuf::from(root));
+            }
 
-            app.manage(state::AppState::new(database, audio));
+            app.manage(state::AppState::new(database, audio, library_watcher));
 
             Ok(())
         })
@@ -62,6 +72,16 @@ pub fn run() {
             commands::library_get_artists,
             commands::library_get_artist_albums,
             commands::library_search,
+            commands::tags_list,
+            commands::tags_create,
+            commands::tags_rename,
+            commands::tags_set_color,
+            commands::tags_delete,
+            commands::tags_assign,
+            commands::tags_remove,
+            commands::tags_get_songs_by_tag,
+            commands::song_update_comment,
+            commands::song_set_custom_start,
             commands::playlist_list,
             commands::playlist_create,
             commands::playlist_rename,

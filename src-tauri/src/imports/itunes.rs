@@ -161,15 +161,7 @@ pub fn run_itunes_import(
     let parsed = parse_itunes_library(xml_path)?;
     let match_context = build_match_context(&db.get_song_match_candidates()?);
 
-    emit_progress(
-        app_handle,
-        "matching",
-        0,
-        parsed.tracks.len(),
-        0,
-        0,
-        None,
-    );
+    emit_progress(app_handle, "matching", 0, parsed.tracks.len(), 0, 0, None);
 
     let mut matched_track_ids_by_itunes_track_id = HashMap::new();
     let mut updates = Vec::<ItunesSongDbUpdate>::new();
@@ -354,8 +346,12 @@ fn playlist_preview_counts(playlists: &[ParsedPlaylist]) -> (usize, usize, usize
 }
 
 fn parse_itunes_library(xml_path: &Path) -> Result<ParsedLibrary, String> {
-    let value = Value::from_file(xml_path)
-        .map_err(|error| format!("failed to parse iTunes plist at {}: {error}", xml_path.display()))?;
+    let value = Value::from_file(xml_path).map_err(|error| {
+        format!(
+            "failed to parse iTunes plist at {}: {error}",
+            xml_path.display()
+        )
+    })?;
 
     let root = value
         .as_dictionary()
@@ -378,7 +374,10 @@ fn parse_itunes_library(xml_path: &Path) -> Result<ParsedLibrary, String> {
             .or_else(|| track_key.parse::<i64>().ok())
             .unwrap_or_default();
 
-        let title = normalize_string(track_dictionary.get("Name").and_then(Value::as_string), "Unknown");
+        let title = normalize_string(
+            track_dictionary.get("Name").and_then(Value::as_string),
+            "Unknown",
+        );
         let artist = normalize_string(
             track_dictionary.get("Artist").and_then(Value::as_string),
             "Unknown Artist",
@@ -442,7 +441,10 @@ fn parse_playlists(values: &[Value]) -> Vec<ParsedPlaylist> {
             continue;
         };
 
-        let name = normalize_string(dictionary.get("Name").and_then(Value::as_string), "Unnamed Playlist");
+        let name = normalize_string(
+            dictionary.get("Name").and_then(Value::as_string),
+            "Unnamed Playlist",
+        );
         let is_folder = dictionary
             .get("Folder")
             .and_then(Value::as_boolean)
@@ -580,9 +582,11 @@ fn convert_itunes_rating(raw: Option<i64>, rating_computed: bool) -> Option<i64>
 }
 
 fn value_as_i64(value: &Value) -> Option<i64> {
-    value
-        .as_signed_integer()
-        .or_else(|| value.as_unsigned_integer().and_then(|raw| i64::try_from(raw).ok()))
+    value.as_signed_integer().or_else(|| {
+        value
+            .as_unsigned_integer()
+            .and_then(|raw| i64::try_from(raw).ok())
+    })
 }
 
 fn value_as_timestamp_string(value: &Value) -> Option<String> {
@@ -663,9 +667,8 @@ fn percent_decode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DurationMatchCandidate, MatchContext, ParsedTrack, convert_itunes_rating,
-        decode_itunes_location, match_track, normalize_path_for_match, parse_playlists,
-        signature_for_match,
+        convert_itunes_rating, decode_itunes_location, match_track, normalize_path_for_match,
+        parse_playlists, signature_for_match, DurationMatchCandidate, MatchContext, ParsedTrack,
     };
     use plist::{Dictionary, Value};
     use std::collections::HashMap;
@@ -680,7 +683,8 @@ mod tests {
 
     #[test]
     fn decodes_itunes_file_location() {
-        let decoded = decode_itunes_location("file://localhost/Users/juan/Music/AC%2FDC%20Track.mp3");
+        let decoded =
+            decode_itunes_location("file://localhost/Users/juan/Music/AC%2FDC%20Track.mp3");
         assert_eq!(decoded, "/Users/juan/Music/AC/DC Track.mp3");
     }
 
@@ -689,7 +693,10 @@ mod tests {
         let left = signature_for_match("The Artist", "Song Name");
         let right = signature_for_match("the artist", "song name");
         assert_eq!(left, right);
-        assert_eq!(normalize_path_for_match("C:\\MUSIC\\Song.MP3"), "c:/music/song.mp3");
+        assert_eq!(
+            normalize_path_for_match("C:\\MUSIC\\Song.MP3"),
+            "c:/music/song.mp3"
+        );
     }
 
     #[test]
@@ -731,7 +738,10 @@ mod tests {
     fn parses_smart_and_system_playlist_flags() {
         let mut smart_playlist = Dictionary::new();
         smart_playlist.insert(String::from("Name"), Value::String(String::from("Smart")));
-        smart_playlist.insert(String::from("Smart Info"), Value::String(String::from("rule")));
+        smart_playlist.insert(
+            String::from("Smart Info"),
+            Value::String(String::from("rule")),
+        );
 
         let mut system_playlist = Dictionary::new();
         system_playlist.insert(String::from("Name"), Value::String(String::from("Music")));
@@ -770,7 +780,8 @@ mod tests {
             Value::String(String::from("FOLDER-1")),
         );
 
-        let playlists = parse_playlists(&[Value::Dictionary(folder), Value::Dictionary(child_playlist)]);
+        let playlists =
+            parse_playlists(&[Value::Dictionary(folder), Value::Dictionary(child_playlist)]);
 
         assert_eq!(playlists.len(), 2);
         assert!(playlists[0].is_folder);

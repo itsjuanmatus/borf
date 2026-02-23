@@ -1,7 +1,7 @@
 use crate::audio::AudioEngine;
 use crate::db::{
     AlbumListItem, ArtistListItem, LibrarySearchResult, PlaylistMutationResult, PlaylistNode,
-    PlaylistTrackItem, SongListItem,
+    PlaylistTrackItem, SongListItem, Tag,
 };
 use crate::imports::itunes::{self, ItunesImportOptions, ItunesImportSummary, ItunesPreview};
 use crate::library;
@@ -17,15 +17,35 @@ pub async fn library_scan(
 ) -> Result<(), String> {
     let db = state.db.clone();
     let folder = PathBuf::from(folder_path);
+    let folder_for_scan = folder.clone();
 
-    tauri::async_runtime::spawn_blocking(move || library::scan_library(&app_handle, &db, &folder))
-        .await
-        .map_err(|error| format!("scan task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        library::scan_library(&app_handle, &db, &folder_for_scan)
+    })
+    .await
+    .map_err(|error| format!("scan task failed: {error}"))??;
+
+    state.library_watcher.watch_root(folder.clone())?;
+
+    let mut roots = state.db.get_library_roots()?;
+    let canonical_folder = std::fs::canonicalize(&folder).unwrap_or(folder);
+    let folder_key = canonical_folder.to_string_lossy().to_string();
+    if !roots.contains(&folder_key) {
+        roots.push(folder_key);
+        state.db.set_library_roots(&roots)?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
-pub fn library_get_song_count(state: State<'_, AppState>) -> Result<i64, String> {
-    state.db.get_song_count()
+pub fn library_get_song_count(
+    state: State<'_, AppState>,
+    tag_ids: Option<Vec<String>>,
+) -> Result<i64, String> {
+    state
+        .db
+        .get_song_count(tag_ids.as_deref().unwrap_or_default())
 }
 
 #[tauri::command]
@@ -35,8 +55,15 @@ pub fn library_get_songs(
     offset: u32,
     sort: String,
     order: String,
+    tag_ids: Option<Vec<String>>,
 ) -> Result<Vec<SongListItem>, String> {
-    state.db.get_songs(limit, offset, &sort, &order)
+    state.db.get_songs(
+        limit,
+        offset,
+        &sort,
+        &order,
+        tag_ids.as_deref().unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -91,8 +118,86 @@ pub fn library_search(
     state: State<'_, AppState>,
     query: String,
     limit: Option<u32>,
+    tag_ids: Option<Vec<String>>,
 ) -> Result<LibrarySearchResult, String> {
-    state.db.search_library(&query, limit.unwrap_or(25))
+    state.db.search_library(
+        &query,
+        limit.unwrap_or(25),
+        tag_ids.as_deref().unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
+pub fn tags_list(state: State<'_, AppState>) -> Result<Vec<Tag>, String> {
+    state.db.tags_list()
+}
+
+#[tauri::command]
+pub fn tags_create(state: State<'_, AppState>, name: String, color: String) -> Result<Tag, String> {
+    state.db.tags_create(&name, &color)
+}
+
+#[tauri::command]
+pub fn tags_rename(state: State<'_, AppState>, id: String, name: String) -> Result<Tag, String> {
+    state.db.tags_rename(&id, &name)
+}
+
+#[tauri::command]
+pub fn tags_set_color(
+    state: State<'_, AppState>,
+    id: String,
+    color: String,
+) -> Result<Tag, String> {
+    state.db.tags_set_color(&id, &color)
+}
+
+#[tauri::command]
+pub fn tags_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.db.tags_delete(&id)
+}
+
+#[tauri::command]
+pub fn tags_assign(
+    state: State<'_, AppState>,
+    song_ids: Vec<String>,
+    tag_ids: Vec<String>,
+) -> Result<PlaylistMutationResult, String> {
+    state.db.tags_assign(&song_ids, &tag_ids)
+}
+
+#[tauri::command]
+pub fn tags_remove(
+    state: State<'_, AppState>,
+    song_ids: Vec<String>,
+    tag_ids: Vec<String>,
+) -> Result<PlaylistMutationResult, String> {
+    state.db.tags_remove(&song_ids, &tag_ids)
+}
+
+#[tauri::command]
+pub fn tags_get_songs_by_tag(
+    state: State<'_, AppState>,
+    tag_ids: Vec<String>,
+) -> Result<Vec<SongListItem>, String> {
+    state.db.tags_get_songs_by_tag(&tag_ids)
+}
+
+#[tauri::command]
+pub fn song_update_comment(
+    state: State<'_, AppState>,
+    song_id: String,
+    comment: Option<String>,
+) -> Result<(), String> {
+    state.db.song_update_comment(&song_id, comment.as_deref())
+}
+
+#[tauri::command]
+pub fn song_set_custom_start(
+    state: State<'_, AppState>,
+    song_id: String,
+    custom_start_ms: i64,
+) -> Result<(), String> {
+    state.db.song_set_custom_start(&song_id, custom_start_ms)
 }
 
 #[tauri::command]
@@ -107,7 +212,9 @@ pub fn playlist_create(
     parent_id: Option<String>,
     is_folder: bool,
 ) -> Result<PlaylistNode, String> {
-    state.db.playlist_create(&name, parent_id.as_deref(), is_folder)
+    state
+        .db
+        .playlist_create(&name, parent_id.as_deref(), is_folder)
 }
 
 #[tauri::command]
@@ -188,9 +295,11 @@ pub async fn import_itunes_preview(
 ) -> Result<ItunesPreview, String> {
     let db = state.db.clone();
 
-    tauri::async_runtime::spawn_blocking(move || itunes::preview_itunes_import(&db, Path::new(&xml_path)))
-        .await
-        .map_err(|error| format!("iTunes preview task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        itunes::preview_itunes_import(&db, Path::new(&xml_path))
+    })
+    .await
+    .map_err(|error| format!("iTunes preview task failed: {error}"))?
 }
 
 #[tauri::command]

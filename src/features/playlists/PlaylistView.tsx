@@ -1,7 +1,9 @@
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ListMusic, Plus, Trash2 } from "lucide-react";
+import { Clock3, ListMusic, Plus, Trash2 } from "lucide-react";
+import type { MouseEvent } from "react";
+import { SongArtwork } from "../../components/song-artwork";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import type { DragSongPayload, PlaylistNode, PlaylistTrackItem } from "../../types";
@@ -19,6 +21,7 @@ interface PlaylistViewProps {
   onPlayTrack: (index: number) => void;
   onAddToQueue: (songId: string) => void;
   onRemoveSelected: () => void;
+  onTrackContextMenu: (event: MouseEvent<HTMLButtonElement>, songId: string, index: number) => void;
 }
 
 interface TrackRowProps {
@@ -34,6 +37,7 @@ interface TrackRowProps {
   ) => void;
   onPlayTrack: (index: number) => void;
   onAddToQueue: (songId: string) => void;
+  onTrackContextMenu: (event: MouseEvent<HTMLButtonElement>, songId: string, index: number) => void;
 }
 
 function formatDuration(ms: number) {
@@ -55,6 +59,7 @@ function TrackRow({
   onSelectTrack,
   onPlayTrack,
   onAddToQueue,
+  onTrackContextMenu,
 }: TrackRowProps) {
   const selected = selectedSongIds.includes(track.song.id);
   const payload: DragSongPayload = {
@@ -82,7 +87,7 @@ function TrackRow({
         {...sortable.attributes}
         {...sortable.listeners}
         className={cn(
-          "grid w-full grid-cols-[36px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 py-2 text-left text-sm",
+          "group/song grid w-full select-none grid-cols-[36px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 py-2 text-left text-sm",
           "hover:bg-sky/15",
           selected && "bg-sky/20",
           currentSongId === track.song.id && "bg-blossom/25",
@@ -94,9 +99,37 @@ function TrackRow({
           })
         }
         onDoubleClick={() => onPlayTrack(index)}
+        onContextMenu={(event) => onTrackContextMenu(event, track.song.id, index)}
       >
         <span className="text-xs text-muted">{index + 1}</span>
-        <span className="truncate font-medium">{track.song.title}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <SongArtwork
+            artworkPath={track.song.artwork_path}
+            playLabel={`Play ${track.song.title}`}
+            onPlay={() => onPlayTrack(index)}
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate font-medium">{track.song.title}</span>
+              {track.song.custom_start_ms > 0 ? (
+                <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted" />
+              ) : null}
+            </div>
+            {track.song.tags.length > 0 ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {track.song.tags.slice(0, 3).map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] leading-none"
+                    style={{ backgroundColor: `${tag.color}40` }}
+                  >
+                    {tag.name}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
         <span className="truncate text-muted">{track.song.artist}</span>
         <span className="text-right text-muted">{formatDuration(track.song.duration_ms)}</span>
         <span className="flex justify-end">
@@ -127,6 +160,7 @@ export function PlaylistView({
   onPlayTrack,
   onAddToQueue,
   onRemoveSelected,
+  onTrackContextMenu,
 }: PlaylistViewProps) {
   const droppable = useDroppable({
     id: playlist ? `playlist-tracks-drop:${playlist.id}` : "playlist-tracks-drop:none",
@@ -197,6 +231,7 @@ export function PlaylistView({
                 onSelectTrack={onSelectTrack}
                 onPlayTrack={onPlayTrack}
                 onAddToQueue={onAddToQueue}
+                onTrackContextMenu={onTrackContextMenu}
               />
             ))
           )}

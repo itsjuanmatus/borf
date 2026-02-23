@@ -14,16 +14,23 @@ import type {
   SongListItem,
   SongSortField,
   SortOrder,
+  Tag,
 } from "../types";
 
 export const libraryApi = {
   scan(folderPath: string) {
     return invoke<void>("library_scan", { folderPath });
   },
-  getSongCount() {
-    return invoke<number>("library_get_song_count");
+  getSongCount(tagIds?: string[]) {
+    return invoke<number>("library_get_song_count", { tagIds: tagIds ?? null });
   },
-  getSongs(params: { limit: number; offset: number; sort: SongSortField; order: SortOrder }) {
+  getSongs(params: {
+    limit: number;
+    offset: number;
+    sort: SongSortField;
+    order: SortOrder;
+    tagIds?: string[];
+  }) {
     return invoke<SongListItem[]>("library_get_songs", params);
   },
   getSongsByIds(songIds: string[]) {
@@ -41,14 +48,47 @@ export const libraryApi = {
   getArtistAlbums(artist: string) {
     return invoke<AlbumListItem[]>("library_get_artist_albums", { artist });
   },
-  search(query: string, limit = 25) {
-    return invoke<LibrarySearchResult>("library_search", { query, limit });
+  search(query: string, limit = 25, tagIds?: string[]) {
+    return invoke<LibrarySearchResult>("library_search", { query, limit, tagIds: tagIds ?? null });
+  },
+  updateSongComment(songId: string, comment: string | null) {
+    return invoke<void>("song_update_comment", { songId, comment });
+  },
+  setSongCustomStart(songId: string, customStartMs: number) {
+    return invoke<void>("song_set_custom_start", { songId, customStartMs });
   },
   importItunesPreview(xmlPath: string) {
     return invoke<ItunesPreview>("import_itunes_preview", { xmlPath });
   },
   importItunes(xmlPath: string, options: ItunesImportOptions) {
     return invoke<ItunesImportSummary>("import_itunes", { xmlPath, options });
+  },
+};
+
+export const tagsApi = {
+  list() {
+    return invoke<Tag[]>("tags_list");
+  },
+  create(name: string, color: string) {
+    return invoke<Tag>("tags_create", { name, color });
+  },
+  rename(id: string, name: string) {
+    return invoke<Tag>("tags_rename", { id, name });
+  },
+  setColor(id: string, color: string) {
+    return invoke<Tag>("tags_set_color", { id, color });
+  },
+  delete(id: string) {
+    return invoke<void>("tags_delete", { id });
+  },
+  assign(songIds: string[], tagIds: string[]) {
+    return invoke<PlaylistMutationResult>("tags_assign", { songIds, tagIds });
+  },
+  remove(songIds: string[], tagIds: string[]) {
+    return invoke<PlaylistMutationResult>("tags_remove", { songIds, tagIds });
+  },
+  getSongsByTag(tagIds: string[]) {
+    return invoke<SongListItem[]>("tags_get_songs_by_tag", { tagIds });
   },
 };
 

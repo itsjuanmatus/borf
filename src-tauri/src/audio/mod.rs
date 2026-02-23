@@ -4,8 +4,8 @@ use serde::Serialize;
 use std::any::Any;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::Path;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -479,7 +479,9 @@ fn handle_seek(
     };
 
     let bounded_position = position_ms.min(current.duration_ms);
-    let seek_result = current.sink.try_seek(Duration::from_millis(bounded_position));
+    let seek_result = current
+        .sink
+        .try_seek(Duration::from_millis(bounded_position));
 
     if seek_result.is_err() {
         recreate_sink_from_offset(stream_handle, current, volume, bounded_position)?;
@@ -744,7 +746,8 @@ fn decode_track_with_symphonia(file_path: &str) -> Result<DecodedTrack, String> 
         channels = decoded.spec().channels.count() as u16;
         sample_rate = decoded.spec().rate;
 
-        let mut sample_buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+        let mut sample_buffer =
+            SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
         sample_buffer.copy_interleaved_ref(decoded);
         samples.extend_from_slice(sample_buffer.samples());
     }

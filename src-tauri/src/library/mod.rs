@@ -1,3 +1,7 @@
+pub mod watcher;
+
+pub use watcher::LibraryWatcher;
+
 use crate::db::{to_sqlite_timestamp, Database, DbSongUpsert};
 use chrono::{DateTime, Utc};
 use lofty::file::TaggedFile;
@@ -102,7 +106,7 @@ pub fn scan_library(
     Ok(())
 }
 
-fn collect_audio_files(folder_path: &Path) -> Vec<PathBuf> {
+pub(crate) fn collect_audio_files(folder_path: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
 
     for entry in WalkDir::new(folder_path)
@@ -124,7 +128,10 @@ fn collect_audio_files(folder_path: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn scan_song_file(path: &Path, artwork_dir: &Path) -> Result<Option<DbSongUpsert>, String> {
+pub(crate) fn scan_song_file(
+    path: &Path,
+    artwork_dir: &Path,
+) -> Result<Option<DbSongUpsert>, String> {
     if !supported_audio_file(path) {
         return Ok(None);
     }

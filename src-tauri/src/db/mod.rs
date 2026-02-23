@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -12,6 +14,9 @@ const MIGRATION_0001: &str = include_str!("../../migrations/0001_phase1.sql");
 const MIGRATION_0002: &str = include_str!("../../migrations/0002_phase2_itunes.sql");
 const MIGRATION_0003: &str = include_str!("../../migrations/0003_phase3_playlists.sql");
 const MIGRATION_0004: &str = include_str!("../../migrations/0004_itunes_playlist_hierarchy.sql");
+const MIGRATION_0005: &str = include_str!("../../migrations/0005_phase4_metadata_tags_watcher.sql");
+
+const LIBRARY_ROOTS_SETTING_KEY: &str = "library_roots";
 
 #[derive(Debug, Clone)]
 pub struct DbSongUpsert {
@@ -35,6 +40,13 @@ pub struct DbSongUpsert {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SongListItem {
     pub id: String,
     pub title: String,
@@ -45,6 +57,8 @@ pub struct SongListItem {
     pub file_path: String,
     pub custom_start_ms: i64,
     pub play_count: i64,
+    pub comment: Option<String>,
+    pub tags: Vec<Tag>,
     pub date_added: Option<String>,
 }
 
@@ -136,6 +150,11 @@ pub struct PlaylistMutationResult {
     pub affected: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LibraryRootsSetting {
+    roots: Vec<String>,
+}
+
 pub struct Database {
     connection: Mutex<Connection>,
     artwork_dir: PathBuf,
@@ -214,9 +233,10 @@ impl Database {
                     bitrate,
                     sample_rate,
                     artwork_path,
-                    file_modified_at
+                    file_modified_at,
+                    is_missing
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_hash = excluded.file_hash,
                     title = excluded.title,
@@ -233,6 +253,7 @@ impl Database {
                     sample_rate = excluded.sample_rate,
                     artwork_path = COALESCE(excluded.artwork_path, songs.artwork_path),
                     file_modified_at = excluded.file_modified_at,
+                    is_missing = 0,
                     updated_at = CURRENT_TIMESTAMP
                 ",
                 )
@@ -270,15 +291,49 @@ impl Database {
             .map_err(|error| format!("failed to commit transaction: {error}"))
     }
 
-    pub fn get_song_count(&self) -> Result<i64, String> {
+    pub fn get_song_count(&self, tag_ids: &[String]) -> Result<i64, String> {
         let connection = self
             .connection
             .lock()
             .map_err(|_| String::from("failed to lock database connection"))?;
 
+        let normalized_tag_ids = normalize_tag_ids(tag_ids);
+        if normalized_tag_ids.is_empty() {
+            return connection
+                .query_row(
+                    "SELECT COUNT(*) FROM songs WHERE is_missing = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| format!("failed to count songs: {error}"));
+        }
+
+        let placeholders = build_placeholders(normalized_tag_ids.len());
+        let required_count = normalized_tag_ids.len() as i64;
+        let query = format!(
+            "
+            SELECT COUNT(*)
+            FROM (
+                SELECT s.id
+                FROM songs s
+                INNER JOIN song_tags st ON st.song_id = s.id
+                WHERE s.is_missing = 0
+                  AND st.tag_id IN ({placeholders})
+                GROUP BY s.id
+                HAVING COUNT(DISTINCT st.tag_id) = ?
+            )
+            "
+        );
+
+        let mut values = normalized_tag_ids
+            .into_iter()
+            .map(SqlValue::from)
+            .collect::<Vec<_>>();
+        values.push(SqlValue::Integer(required_count));
+
         connection
-            .query_row("SELECT COUNT(*) FROM songs", [], |row| row.get::<_, i64>(0))
-            .map_err(|error| format!("failed to count songs: {error}"))
+            .query_row(&query, params_from_iter(values), |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("failed to count songs by tags: {error}"))
     }
 
     pub fn get_songs(
@@ -287,15 +342,16 @@ impl Database {
         offset: u32,
         sort: &str,
         order: &str,
+        tag_ids: &[String],
     ) -> Result<Vec<SongListItem>, String> {
         let sort_column = match sort {
-            "title" => "title COLLATE NOCASE",
-            "artist" => "artist COLLATE NOCASE",
-            "album" => "album COLLATE NOCASE",
-            "date_added" => "date_added",
-            "play_count" => "play_count",
-            "duration_ms" => "duration_ms",
-            _ => "title COLLATE NOCASE",
+            "title" => "s.title COLLATE NOCASE",
+            "artist" => "s.artist COLLATE NOCASE",
+            "album" => "s.album COLLATE NOCASE",
+            "date_added" => "s.date_added",
+            "play_count" => "s.play_count",
+            "duration_ms" => "s.duration_ms",
+            _ => "s.title COLLATE NOCASE",
         };
 
         let sort_order = if order.eq_ignore_ascii_case("desc") {
@@ -304,22 +360,30 @@ impl Database {
             "ASC"
         };
 
+        let normalized_tag_ids = normalize_tag_ids(tag_ids);
+        let (tag_clause, mut values) = build_song_tag_clause_values(&normalized_tag_ids);
+        values.push(SqlValue::Integer(i64::from(limit)));
+        values.push(SqlValue::Integer(i64::from(offset)));
+
         let query = format!(
             "
             SELECT
-                id,
-                title,
-                artist,
-                album,
-                duration_ms,
-                artwork_path,
-                file_path,
-                custom_start_ms,
-                play_count,
-                date_added
-            FROM songs
+                s.id,
+                s.title,
+                s.artist,
+                s.album,
+                s.duration_ms,
+                s.artwork_path,
+                s.file_path,
+                s.custom_start_ms,
+                s.play_count,
+                s.comment,
+                s.date_added
+            FROM songs s
+            WHERE s.is_missing = 0
+              {tag_clause}
             ORDER BY {sort_column} {sort_order}
-            LIMIT ?1 OFFSET ?2
+            LIMIT ? OFFSET ?
             "
         );
 
@@ -333,7 +397,7 @@ impl Database {
             .map_err(|error| format!("failed to prepare songs query: {error}"))?;
 
         let rows = statement
-            .query_map(params![limit, offset], |row| {
+            .query_map(params_from_iter(values), |row| {
                 Ok(SongListItem {
                     id: row.get(0)?,
                     title: row.get(1)?,
@@ -344,7 +408,9 @@ impl Database {
                     file_path: row.get(6)?,
                     custom_start_ms: row.get(7)?,
                     play_count: row.get(8)?,
-                    date_added: row.get(9)?,
+                    comment: row.get(9)?,
+                    tags: Vec::new(),
+                    date_added: row.get(10)?,
                 })
             })
             .map_err(|error| format!("failed to query songs: {error}"))?;
@@ -354,6 +420,7 @@ impl Database {
             songs.push(row.map_err(|error| format!("failed to read song row: {error}"))?);
         }
 
+        hydrate_song_tags(&connection, &mut songs)?;
         Ok(songs)
     }
 
@@ -379,6 +446,7 @@ impl Database {
                 file_path,
                 custom_start_ms,
                 play_count,
+                comment,
                 date_added
             FROM songs
             WHERE id IN ({placeholders})
@@ -411,7 +479,9 @@ impl Database {
                     file_path: row.get(6)?,
                     custom_start_ms: row.get(7)?,
                     play_count: row.get(8)?,
-                    date_added: row.get(9)?,
+                    comment: row.get(9)?,
+                    tags: Vec::new(),
+                    date_added: row.get(10)?,
                 })
             })
             .map_err(|error| format!("failed to fetch songs by ids: {error}"))?;
@@ -433,6 +503,7 @@ impl Database {
             }
         }
 
+        hydrate_song_tags(&connection, &mut ordered)?;
         Ok(ordered)
     }
 
@@ -467,6 +538,7 @@ impl Database {
                 MAX(year) AS year,
                 MIN(date_added) AS date_added
             FROM songs
+            WHERE is_missing = 0
             GROUP BY
                 album,
                 COALESCE(NULLIF(album_artist, ''), NULLIF(artist, ''), 'Unknown Artist')
@@ -506,7 +578,11 @@ impl Database {
         Ok(albums)
     }
 
-    pub fn get_album_tracks(&self, album: &str, album_artist: &str) -> Result<Vec<SongListItem>, String> {
+    pub fn get_album_tracks(
+        &self,
+        album: &str,
+        album_artist: &str,
+    ) -> Result<Vec<SongListItem>, String> {
         let connection = self
             .connection
             .lock()
@@ -525,9 +601,11 @@ impl Database {
                     file_path,
                     custom_start_ms,
                     play_count,
+                    comment,
                     date_added
                 FROM songs
                 WHERE album = ?1
+                  AND is_missing = 0
                   AND COALESCE(NULLIF(album_artist, ''), NULLIF(artist, ''), 'Unknown Artist') = ?2
                 ORDER BY
                     disc_number ASC,
@@ -549,7 +627,9 @@ impl Database {
                     file_path: row.get(6)?,
                     custom_start_ms: row.get(7)?,
                     play_count: row.get(8)?,
-                    date_added: row.get(9)?,
+                    comment: row.get(9)?,
+                    tags: Vec::new(),
+                    date_added: row.get(10)?,
                 })
             })
             .map_err(|error| format!("failed to query album tracks: {error}"))?;
@@ -559,6 +639,7 @@ impl Database {
             tracks.push(row.map_err(|error| format!("failed to decode album track: {error}"))?);
         }
 
+        hydrate_song_tags(&connection, &mut tracks)?;
         Ok(tracks)
     }
 
@@ -589,6 +670,7 @@ impl Database {
                 COALESCE(SUM(play_count), 0) AS play_count,
                 MAX(artwork_path) AS artwork_path
             FROM songs
+            WHERE is_missing = 0
             GROUP BY COALESCE(NULLIF(artist, ''), 'Unknown Artist')
             ORDER BY {sort_column} {sort_order}
             LIMIT ?1 OFFSET ?2
@@ -643,6 +725,7 @@ impl Database {
                     MIN(date_added) AS date_added
                 FROM songs
                 WHERE COALESCE(NULLIF(artist, ''), 'Unknown Artist') = ?1
+                  AND is_missing = 0
                 GROUP BY
                     album,
                     COALESCE(NULLIF(album_artist, ''), NULLIF(artist, ''), 'Unknown Artist')
@@ -667,13 +750,19 @@ impl Database {
 
         let mut albums = Vec::new();
         for row in rows {
-            albums.push(row.map_err(|error| format!("failed to decode artist album row: {error}"))?);
+            albums
+                .push(row.map_err(|error| format!("failed to decode artist album row: {error}"))?);
         }
 
         Ok(albums)
     }
 
-    pub fn search_library(&self, query: &str, limit: u32) -> Result<LibrarySearchResult, String> {
+    pub fn search_library(
+        &self,
+        query: &str,
+        limit: u32,
+        tag_ids: &[String],
+    ) -> Result<LibrarySearchResult, String> {
         let trimmed = query.trim();
         if trimmed.is_empty() {
             return Ok(LibrarySearchResult {
@@ -683,24 +772,42 @@ impl Database {
             });
         }
 
-        let fts_query = match build_fts_query(trimmed) {
-            Some(value) => value,
-            None => {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let (text_query, inline_tag_names) = split_search_query(trimmed);
+        let mut required_tag_ids = normalize_tag_ids(tag_ids);
+        for tag_name in inline_tag_names {
+            let resolved = connection
+                .query_row(
+                    "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE LIMIT 1",
+                    params![tag_name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("failed to resolve inline tag search: {error}"))?;
+
+            if let Some(tag_id) = resolved {
+                if !required_tag_ids.contains(&tag_id) {
+                    required_tag_ids.push(tag_id);
+                }
+            } else {
                 return Ok(LibrarySearchResult {
                     songs: Vec::new(),
                     albums: Vec::new(),
                     artists: Vec::new(),
                 });
             }
-        };
+        }
 
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| String::from("failed to lock database connection"))?;
+        let fts_query = build_fts_query(&text_query);
+        let (tag_clause, tag_values) = build_song_tag_clause_values(&required_tag_ids);
+        let mut songs = Vec::new();
 
-        let mut song_statement = connection
-            .prepare(
+        if let Some(fts_query) = fts_query {
+            let query = format!(
                 "
                 SELECT
                     s.id,
@@ -712,39 +819,115 @@ impl Database {
                     s.file_path,
                     s.custom_start_ms,
                     s.play_count,
+                    s.comment,
                     s.date_added
                 FROM songs_fts
                 JOIN songs s ON s.rowid = songs_fts.rowid
-                WHERE songs_fts MATCH ?1
+                WHERE s.is_missing = 0
+                  AND songs_fts MATCH ?
+                  {tag_clause}
                 ORDER BY bm25(songs_fts), s.title COLLATE NOCASE ASC
-                LIMIT ?2
-                ",
-            )
-            .map_err(|error| format!("failed to prepare search songs query: {error}"))?;
+                LIMIT ?
+                "
+            );
+            let mut values = vec![SqlValue::from(fts_query)];
+            values.extend(tag_values.clone());
+            values.push(SqlValue::Integer(i64::from(limit)));
 
-        let song_rows = song_statement
-            .query_map(params![fts_query, limit], |row| {
-                Ok(SongListItem {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    artist: row.get(2)?,
-                    album: row.get(3)?,
-                    duration_ms: row.get(4)?,
-                    artwork_path: row.get(5)?,
-                    file_path: row.get(6)?,
-                    custom_start_ms: row.get(7)?,
-                    play_count: row.get(8)?,
-                    date_added: row.get(9)?,
+            let mut song_statement = connection
+                .prepare(&query)
+                .map_err(|error| format!("failed to prepare search songs query: {error}"))?;
+            let rows = song_statement
+                .query_map(params_from_iter(values), |row| {
+                    Ok(SongListItem {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        artist: row.get(2)?,
+                        album: row.get(3)?,
+                        duration_ms: row.get(4)?,
+                        artwork_path: row.get(5)?,
+                        file_path: row.get(6)?,
+                        custom_start_ms: row.get(7)?,
+                        play_count: row.get(8)?,
+                        comment: row.get(9)?,
+                        tags: Vec::new(),
+                        date_added: row.get(10)?,
+                    })
                 })
-            })
-            .map_err(|error| format!("failed to execute songs search query: {error}"))?;
+                .map_err(|error| format!("failed to execute songs search query: {error}"))?;
 
-        let mut songs = Vec::new();
-        for row in song_rows {
-            songs.push(row.map_err(|error| format!("failed to decode songs search row: {error}"))?);
+            for row in rows {
+                songs.push(
+                    row.map_err(|error| format!("failed to decode songs search row: {error}"))?,
+                );
+            }
+        } else if !required_tag_ids.is_empty() {
+            let query = format!(
+                "
+                SELECT
+                    s.id,
+                    s.title,
+                    s.artist,
+                    s.album,
+                    s.duration_ms,
+                    s.artwork_path,
+                    s.file_path,
+                    s.custom_start_ms,
+                    s.play_count,
+                    s.comment,
+                    s.date_added
+                FROM songs s
+                WHERE s.is_missing = 0
+                  {tag_clause}
+                ORDER BY s.title COLLATE NOCASE ASC
+                LIMIT ?
+                "
+            );
+            let mut values = tag_values;
+            values.push(SqlValue::Integer(i64::from(limit)));
+
+            let mut song_statement = connection.prepare(&query).map_err(|error| {
+                format!("failed to prepare tag-only songs search query: {error}")
+            })?;
+            let rows = song_statement
+                .query_map(params_from_iter(values), |row| {
+                    Ok(SongListItem {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        artist: row.get(2)?,
+                        album: row.get(3)?,
+                        duration_ms: row.get(4)?,
+                        artwork_path: row.get(5)?,
+                        file_path: row.get(6)?,
+                        custom_start_ms: row.get(7)?,
+                        play_count: row.get(8)?,
+                        comment: row.get(9)?,
+                        tags: Vec::new(),
+                        date_added: row.get(10)?,
+                    })
+                })
+                .map_err(|error| {
+                    format!("failed to execute tag-only songs search query: {error}")
+                })?;
+
+            for row in rows {
+                songs.push(row.map_err(|error| {
+                    format!("failed to decode tag-only songs search row: {error}")
+                })?);
+            }
         }
 
-        let like_pattern = format!("%{}%", escape_like_pattern(trimmed));
+        hydrate_song_tags(&connection, &mut songs)?;
+
+        if text_query.is_empty() {
+            return Ok(LibrarySearchResult {
+                songs,
+                albums: Vec::new(),
+                artists: Vec::new(),
+            });
+        }
+
+        let like_pattern = format!("%{}%", escape_like_pattern(&text_query));
 
         let mut album_statement = connection
             .prepare(
@@ -758,7 +941,8 @@ impl Database {
                     MAX(year) AS year,
                     MIN(date_added) AS date_added
                 FROM songs
-                WHERE album LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                WHERE is_missing = 0
+                  AND album LIKE ?1 ESCAPE '\\' COLLATE NOCASE
                 GROUP BY
                     album,
                     COALESCE(NULLIF(album_artist, ''), NULLIF(artist, ''), 'Unknown Artist')
@@ -784,7 +968,8 @@ impl Database {
 
         let mut albums = Vec::new();
         for row in album_rows {
-            albums.push(row.map_err(|error| format!("failed to decode album search row: {error}"))?);
+            albums
+                .push(row.map_err(|error| format!("failed to decode album search row: {error}"))?);
         }
 
         let mut artist_statement = connection
@@ -797,7 +982,8 @@ impl Database {
                     COALESCE(SUM(play_count), 0) AS play_count,
                     MAX(artwork_path) AS artwork_path
                 FROM songs
-                WHERE artist LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+                WHERE is_missing = 0
+                  AND artist LIKE ?1 ESCAPE '\\' COLLATE NOCASE
                 GROUP BY COALESCE(NULLIF(artist, ''), 'Unknown Artist')
                 ORDER BY song_count DESC, artist COLLATE NOCASE ASC
                 LIMIT ?2
@@ -819,7 +1005,8 @@ impl Database {
 
         let mut artists = Vec::new();
         for row in artist_rows {
-            artists.push(row.map_err(|error| format!("failed to decode artist search row: {error}"))?);
+            artists
+                .push(row.map_err(|error| format!("failed to decode artist search row: {error}"))?);
         }
 
         Ok(LibrarySearchResult {
@@ -845,6 +1032,7 @@ impl Database {
                     custom_start_ms
                 FROM songs
                 WHERE id = ?1
+                  AND is_missing = 0
                 ",
                 params![song_id],
                 |row| {
@@ -924,7 +1112,8 @@ impl Database {
 
         ensure_valid_parent_folder(&transaction, parent_id)?;
         let requested_name = normalize_playlist_name(name, is_folder);
-        let resolved_name = resolve_unique_playlist_name(&transaction, parent_id, &requested_name, None)?;
+        let resolved_name =
+            resolve_unique_playlist_name(&transaction, parent_id, &requested_name, None)?;
         let sort_order = next_playlist_sort_order(&transaction, parent_id)?;
         let playlist_id = Uuid::new_v4().to_string();
 
@@ -1059,7 +1248,9 @@ impl Database {
                     VALUES (?1, ?2, ?3, ?4)
                     ",
                 )
-                .map_err(|error| format!("failed to prepare playlist track duplicate statement: {error}"))?;
+                .map_err(|error| {
+                    format!("failed to prepare playlist track duplicate statement: {error}")
+                })?;
 
             for (position, song_id) in source_song_ids.iter().enumerate() {
                 insert_statement
@@ -1102,7 +1293,9 @@ impl Database {
             }
             ensure_valid_parent_folder(&transaction, Some(target_parent_id))?;
             if is_playlist_descendant(&transaction, playlist_id, target_parent_id)? {
-                return Err(String::from("cannot move a playlist into one of its descendants"));
+                return Err(String::from(
+                    "cannot move a playlist into one of its descendants",
+                ));
             }
         }
 
@@ -1162,10 +1355,12 @@ impl Database {
                     s.file_path,
                     s.custom_start_ms,
                     s.play_count,
+                    s.comment,
                     s.date_added
                 FROM playlist_tracks pt
                 INNER JOIN songs s ON s.id = pt.song_id
                 WHERE pt.playlist_id = ?1
+                  AND s.is_missing = 0
                 ORDER BY pt.position ASC, pt.added_at ASC
                 ",
             )
@@ -1186,7 +1381,9 @@ impl Database {
                         file_path: row.get(8)?,
                         custom_start_ms: row.get(9)?,
                         play_count: row.get(10)?,
-                        date_added: row.get(11)?,
+                        comment: row.get(11)?,
+                        tags: Vec::new(),
+                        date_added: row.get(12)?,
                     },
                 })
             })
@@ -1194,7 +1391,25 @@ impl Database {
 
         let mut tracks = Vec::new();
         for row in rows {
-            tracks.push(row.map_err(|error| format!("failed to decode playlist track row: {error}"))?);
+            tracks.push(
+                row.map_err(|error| format!("failed to decode playlist track row: {error}"))?,
+            );
+        }
+
+        let mut songs = tracks
+            .iter()
+            .map(|track| track.song.clone())
+            .collect::<Vec<_>>();
+        hydrate_song_tags(&connection, &mut songs)?;
+        let tags_by_song_id = songs
+            .into_iter()
+            .map(|song| (song.id, song.tags))
+            .collect::<HashMap<_, _>>();
+        for track in &mut tracks {
+            track.song.tags = tags_by_song_id
+                .get(&track.song.id)
+                .cloned()
+                .unwrap_or_default();
         }
 
         Ok(tracks)
@@ -1231,10 +1446,12 @@ impl Database {
         let mut candidates = Vec::<String>::new();
         {
             let mut existing_song_query = transaction
-                .prepare("SELECT 1 FROM songs WHERE id = ?1 LIMIT 1")
+                .prepare("SELECT 1 FROM songs WHERE id = ?1 AND is_missing = 0 LIMIT 1")
                 .map_err(|error| format!("failed to prepare song existence query: {error}"))?;
             let mut existing_in_playlist_query = transaction
-                .prepare("SELECT 1 FROM playlist_tracks WHERE playlist_id = ?1 AND song_id = ?2 LIMIT 1")
+                .prepare(
+                    "SELECT 1 FROM playlist_tracks WHERE playlist_id = ?1 AND song_id = ?2 LIMIT 1",
+                )
                 .map_err(|error| format!("failed to prepare playlist duplicate query: {error}"))?;
 
             for song_id in &deduped {
@@ -1250,7 +1467,9 @@ impl Database {
                 let already_in_playlist = existing_in_playlist_query
                     .query_row(params![playlist_id, song_id], |_| Ok(()))
                     .optional()
-                    .map_err(|error| format!("failed to validate playlist duplicate for song {song_id}: {error}"))?
+                    .map_err(|error| {
+                        format!("failed to validate playlist duplicate for song {song_id}: {error}")
+                    })?
                     .is_some();
                 if already_in_playlist {
                     continue;
@@ -1261,9 +1480,9 @@ impl Database {
         }
 
         if candidates.is_empty() {
-            transaction
-                .commit()
-                .map_err(|error| format!("failed to commit empty playlist add transaction: {error}"))?;
+            transaction.commit().map_err(|error| {
+                format!("failed to commit empty playlist add transaction: {error}")
+            })?;
             return Ok(PlaylistMutationResult { affected: 0 });
         }
 
@@ -1286,7 +1505,11 @@ impl Database {
                 SET position = position + ?2
                 WHERE playlist_id = ?1 AND position >= ?3
                 ",
-                params![playlist_id, candidates.len() as i64, bounded_insert_index as i64],
+                params![
+                    playlist_id,
+                    candidates.len() as i64,
+                    bounded_insert_index as i64
+                ],
             )
             .map_err(|error| format!("failed to shift playlist tracks for insert: {error}"))?;
 
@@ -1298,7 +1521,9 @@ impl Database {
                     VALUES (?1, ?2, ?3, ?4)
                     ",
                 )
-                .map_err(|error| format!("failed to prepare playlist track insert statement: {error}"))?;
+                .map_err(|error| {
+                    format!("failed to prepare playlist track insert statement: {error}")
+                })?;
 
             for (offset, song_id) in candidates.iter().enumerate() {
                 insert_statement
@@ -1336,9 +1561,9 @@ impl Database {
             .connection
             .lock()
             .map_err(|_| String::from("failed to lock database connection"))?;
-        let transaction = connection
-            .transaction()
-            .map_err(|error| format!("failed to start playlist remove songs transaction: {error}"))?;
+        let transaction = connection.transaction().map_err(|error| {
+            format!("failed to start playlist remove songs transaction: {error}")
+        })?;
 
         ensure_playlist_accepts_tracks(&transaction, playlist_id)?;
 
@@ -1368,9 +1593,9 @@ impl Database {
             rebalance_playlist_track_positions(&transaction, playlist_id)?;
         }
 
-        transaction
-            .commit()
-            .map_err(|error| format!("failed to commit playlist remove songs transaction: {error}"))?;
+        transaction.commit().map_err(|error| {
+            format!("failed to commit playlist remove songs transaction: {error}")
+        })?;
 
         Ok(PlaylistMutationResult { affected })
     }
@@ -1392,9 +1617,9 @@ impl Database {
 
         let current_song_ids = fetch_playlist_track_song_ids(&transaction, playlist_id)?;
         if current_song_ids.is_empty() {
-            transaction
-                .commit()
-                .map_err(|error| format!("failed to commit empty playlist reorder transaction: {error}"))?;
+            transaction.commit().map_err(|error| {
+                format!("failed to commit empty playlist reorder transaction: {error}")
+            })?;
             return Ok(());
         }
 
@@ -1423,12 +1648,16 @@ impl Database {
                     WHERE playlist_id = ?1 AND song_id = ?2
                     ",
                 )
-                .map_err(|error| format!("failed to prepare playlist reorder update statement: {error}"))?;
+                .map_err(|error| {
+                    format!("failed to prepare playlist reorder update statement: {error}")
+                })?;
 
             for (position, song_id) in reordered.iter().enumerate() {
                 update_statement
                     .execute(params![playlist_id, song_id, position as i64])
-                    .map_err(|error| format!("failed to update playlist track position: {error}"))?;
+                    .map_err(|error| {
+                        format!("failed to update playlist track position: {error}")
+                    })?;
             }
         }
 
@@ -1437,6 +1666,412 @@ impl Database {
             .map_err(|error| format!("failed to commit playlist reorder transaction: {error}"))?;
 
         Ok(())
+    }
+
+    pub fn tags_list(&self) -> Result<Vec<Tag>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT id, name, color
+                FROM tags
+                ORDER BY name COLLATE NOCASE ASC
+                ",
+            )
+            .map_err(|error| format!("failed to prepare tags list query: {error}"))?;
+
+        let rows = statement
+            .query_map([], |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    color: row.get(2)?,
+                })
+            })
+            .map_err(|error| format!("failed to query tags list: {error}"))?;
+
+        let mut tags = Vec::new();
+        for row in rows {
+            tags.push(row.map_err(|error| format!("failed to decode tag row: {error}"))?);
+        }
+
+        Ok(tags)
+    }
+
+    pub fn tags_create(&self, name: &str, color: &str) -> Result<Tag, String> {
+        let normalized_name = normalize_tag_name(name)?;
+        let normalized_color = normalize_tag_color(color);
+        let tag_id = Uuid::new_v4().to_string();
+
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        connection
+            .execute(
+                "
+                INSERT INTO tags (id, name, color)
+                VALUES (?1, ?2, ?3)
+                ",
+                params![tag_id, normalized_name, normalized_color],
+            )
+            .map_err(|error| format!("failed to create tag: {error}"))?;
+
+        get_tag_by_id(&connection, &tag_id)
+    }
+
+    pub fn tags_rename(&self, tag_id: &str, name: &str) -> Result<Tag, String> {
+        let normalized_name = normalize_tag_name(name)?;
+
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let affected = connection
+            .execute(
+                "
+                UPDATE tags
+                SET name = ?1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?2
+                ",
+                params![normalized_name, tag_id],
+            )
+            .map_err(|error| format!("failed to rename tag: {error}"))?;
+
+        if affected == 0 {
+            return Err(String::from("tag not found"));
+        }
+
+        get_tag_by_id(&connection, tag_id)
+    }
+
+    pub fn tags_set_color(&self, tag_id: &str, color: &str) -> Result<Tag, String> {
+        let normalized_color = normalize_tag_color(color);
+
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let affected = connection
+            .execute(
+                "
+                UPDATE tags
+                SET color = ?1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?2
+                ",
+                params![normalized_color, tag_id],
+            )
+            .map_err(|error| format!("failed to update tag color: {error}"))?;
+
+        if affected == 0 {
+            return Err(String::from("tag not found"));
+        }
+
+        get_tag_by_id(&connection, tag_id)
+    }
+
+    pub fn tags_delete(&self, tag_id: &str) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let affected = connection
+            .execute("DELETE FROM tags WHERE id = ?1", params![tag_id])
+            .map_err(|error| format!("failed to delete tag: {error}"))?;
+
+        if affected == 0 {
+            return Err(String::from("tag not found"));
+        }
+        Ok(())
+    }
+
+    pub fn tags_assign(
+        &self,
+        song_ids: &[String],
+        tag_ids: &[String],
+    ) -> Result<PlaylistMutationResult, String> {
+        let normalized_song_ids = normalize_string_ids(song_ids);
+        let normalized_tag_ids = normalize_tag_ids(tag_ids);
+
+        if normalized_song_ids.is_empty() || normalized_tag_ids.is_empty() {
+            return Ok(PlaylistMutationResult { affected: 0 });
+        }
+
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("failed to start tag assign transaction: {error}"))?;
+
+        let mut affected: i64 = 0;
+        {
+            let mut insert_statement = transaction
+                .prepare(
+                    "
+                    INSERT OR IGNORE INTO song_tags (song_id, tag_id)
+                    VALUES (?1, ?2)
+                    ",
+                )
+                .map_err(|error| format!("failed to prepare tag assign statement: {error}"))?;
+
+            for song_id in &normalized_song_ids {
+                for tag_id in &normalized_tag_ids {
+                    let inserted = insert_statement
+                        .execute(params![song_id, tag_id])
+                        .map_err(|error| format!("failed to assign tag to song: {error}"))?;
+                    affected += inserted as i64;
+                }
+            }
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit tag assign transaction: {error}"))?;
+
+        Ok(PlaylistMutationResult { affected })
+    }
+
+    pub fn tags_remove(
+        &self,
+        song_ids: &[String],
+        tag_ids: &[String],
+    ) -> Result<PlaylistMutationResult, String> {
+        let normalized_song_ids = normalize_string_ids(song_ids);
+        let normalized_tag_ids = normalize_tag_ids(tag_ids);
+
+        if normalized_song_ids.is_empty() || normalized_tag_ids.is_empty() {
+            return Ok(PlaylistMutationResult { affected: 0 });
+        }
+
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("failed to start tag remove transaction: {error}"))?;
+
+        let mut affected: i64 = 0;
+        {
+            let mut delete_statement = transaction
+                .prepare(
+                    "
+                    DELETE FROM song_tags
+                    WHERE song_id = ?1 AND tag_id = ?2
+                    ",
+                )
+                .map_err(|error| format!("failed to prepare tag remove statement: {error}"))?;
+
+            for song_id in &normalized_song_ids {
+                for tag_id in &normalized_tag_ids {
+                    let removed = delete_statement
+                        .execute(params![song_id, tag_id])
+                        .map_err(|error| format!("failed to remove tag from song: {error}"))?;
+                    affected += removed as i64;
+                }
+            }
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit tag remove transaction: {error}"))?;
+
+        Ok(PlaylistMutationResult { affected })
+    }
+
+    pub fn tags_get_songs_by_tag(&self, tag_ids: &[String]) -> Result<Vec<SongListItem>, String> {
+        let normalized_tag_ids = normalize_tag_ids(tag_ids);
+        if normalized_tag_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (tag_clause, mut values) = build_song_tag_clause_values(&normalized_tag_ids);
+        let query = format!(
+            "
+            SELECT
+                s.id,
+                s.title,
+                s.artist,
+                s.album,
+                s.duration_ms,
+                s.artwork_path,
+                s.file_path,
+                s.custom_start_ms,
+                s.play_count,
+                s.comment,
+                s.date_added
+            FROM songs s
+            WHERE s.is_missing = 0
+              {tag_clause}
+            ORDER BY s.title COLLATE NOCASE ASC
+            "
+        );
+
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+        let mut statement = connection
+            .prepare(&query)
+            .map_err(|error| format!("failed to prepare tags get songs query: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(values.drain(..)), |row| {
+                Ok(SongListItem {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    artist: row.get(2)?,
+                    album: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    artwork_path: row.get(5)?,
+                    file_path: row.get(6)?,
+                    custom_start_ms: row.get(7)?,
+                    play_count: row.get(8)?,
+                    comment: row.get(9)?,
+                    tags: Vec::new(),
+                    date_added: row.get(10)?,
+                })
+            })
+            .map_err(|error| format!("failed to query songs by tag: {error}"))?;
+
+        let mut songs = Vec::new();
+        for row in rows {
+            songs.push(row.map_err(|error| format!("failed to decode songs by tag row: {error}"))?);
+        }
+
+        hydrate_song_tags(&connection, &mut songs)?;
+        Ok(songs)
+    }
+
+    pub fn song_update_comment(&self, song_id: &str, comment: Option<&str>) -> Result<(), String> {
+        let normalized_comment = comment
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(String::from);
+
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let affected = connection
+            .execute(
+                "
+                UPDATE songs
+                SET comment = ?2, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?1
+                ",
+                params![song_id, normalized_comment],
+            )
+            .map_err(|error| format!("failed to update song comment: {error}"))?;
+
+        if affected == 0 {
+            return Err(String::from("song not found"));
+        }
+
+        Ok(())
+    }
+
+    pub fn song_set_custom_start(&self, song_id: &str, custom_start_ms: i64) -> Result<(), String> {
+        let clamped = custom_start_ms.max(0);
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let affected = connection
+            .execute(
+                "
+                UPDATE songs
+                SET custom_start_ms = ?2, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?1
+                ",
+                params![song_id, clamped],
+            )
+            .map_err(|error| format!("failed to update custom start time: {error}"))?;
+
+        if affected == 0 {
+            return Err(String::from("song not found"));
+        }
+
+        Ok(())
+    }
+
+    pub fn mark_songs_missing_by_paths(&self, file_paths: &[String]) -> Result<i64, String> {
+        let deduped = normalize_string_ids(file_paths);
+        if deduped.is_empty() {
+            return Ok(0);
+        }
+
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("failed to start mark-missing transaction: {error}"))?;
+
+        let mut affected: i64 = 0;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "
+                    UPDATE songs
+                    SET is_missing = 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE file_path = ?1
+                       OR file_path LIKE ?2 ESCAPE '\\'
+                    ",
+                )
+                .map_err(|error| format!("failed to prepare mark-missing statement: {error}"))?;
+
+            for file_path in deduped {
+                let like_prefix =
+                    format!("{}/%", escape_like_pattern(&file_path.replace('\\', "/")));
+                let changed = statement
+                    .execute(params![file_path, like_prefix])
+                    .map_err(|error| format!("failed to mark missing song: {error}"))?;
+                affected += changed as i64;
+            }
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit mark-missing transaction: {error}"))?;
+
+        Ok(affected)
+    }
+
+    pub fn get_library_roots(&self) -> Result<Vec<String>, String> {
+        let raw = self.get_setting(LIBRARY_ROOTS_SETTING_KEY)?;
+        let Some(raw) = raw else {
+            return Ok(Vec::new());
+        };
+
+        let parsed = serde_json::from_str::<LibraryRootsSetting>(&raw)
+            .or_else(|_| {
+                serde_json::from_str::<Vec<String>>(&raw).map(|roots| LibraryRootsSetting { roots })
+            })
+            .map_err(|error| format!("failed to decode library roots setting: {error}"))?;
+
+        Ok(normalize_string_ids(&parsed.roots))
+    }
+
+    pub fn set_library_roots(&self, roots: &[String]) -> Result<(), String> {
+        let payload = LibraryRootsSetting {
+            roots: normalize_string_ids(roots),
+        };
+        let encoded = serde_json::to_string(&payload)
+            .map_err(|error| format!("failed to encode library roots setting: {error}"))?;
+        self.set_setting(LIBRARY_ROOTS_SETTING_KEY, &encoded)
     }
 
     pub fn get_song_match_candidates(&self) -> Result<Vec<SongMatchCandidate>, String> {
@@ -1450,6 +2085,7 @@ impl Database {
                 "
                 SELECT id, file_path, title, artist, duration_ms
                 FROM songs
+                WHERE is_missing = 0
                 ",
             )
             .map_err(|error| format!("failed to prepare match candidates query: {error}"))?;
@@ -1468,7 +2104,9 @@ impl Database {
 
         let mut songs = Vec::new();
         for row in rows {
-            songs.push(row.map_err(|error| format!("failed to decode match candidate row: {error}"))?);
+            songs.push(
+                row.map_err(|error| format!("failed to decode match candidate row: {error}"))?,
+            );
         }
 
         Ok(songs)
@@ -1519,7 +2157,9 @@ impl Database {
                     WHERE id = ?1
                     ",
                 )
-                .map_err(|error| format!("failed to prepare iTunes song update statement: {error}"))?;
+                .map_err(|error| {
+                    format!("failed to prepare iTunes song update statement: {error}")
+                })?;
 
             for update in song_updates {
                 update_statement
@@ -1824,7 +2464,10 @@ fn get_playlist_node_with_connection(
         .map_err(|error| format!("failed to load playlist {playlist_id}: {error}"))
 }
 
-fn get_playlist_node_with_tx(transaction: &Transaction<'_>, playlist_id: &str) -> Result<PlaylistNode, String> {
+fn get_playlist_node_with_tx(
+    transaction: &Transaction<'_>,
+    playlist_id: &str,
+) -> Result<PlaylistNode, String> {
     transaction
         .query_row(
             "
@@ -1855,7 +2498,10 @@ fn get_playlist_node_with_tx(transaction: &Transaction<'_>, playlist_id: &str) -
         .map_err(|error| format!("failed to load playlist {playlist_id}: {error}"))
 }
 
-fn ensure_valid_parent_folder(transaction: &Transaction<'_>, parent_id: Option<&str>) -> Result<(), String> {
+fn ensure_valid_parent_folder(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+) -> Result<(), String> {
     let Some(parent_id) = parent_id else {
         return Ok(());
     };
@@ -1868,7 +2514,10 @@ fn ensure_valid_parent_folder(transaction: &Transaction<'_>, parent_id: Option<&
     Ok(())
 }
 
-fn ensure_playlist_accepts_tracks(transaction: &Transaction<'_>, playlist_id: &str) -> Result<(), String> {
+fn ensure_playlist_accepts_tracks(
+    transaction: &Transaction<'_>,
+    playlist_id: &str,
+) -> Result<(), String> {
     let playlist = get_playlist_node_with_tx(transaction, playlist_id)?;
     if playlist.is_folder {
         return Err(String::from("folders cannot contain tracks"));
@@ -1919,7 +2568,10 @@ fn resolve_unique_playlist_name(
     Ok(candidate)
 }
 
-fn next_playlist_sort_order(transaction: &Transaction<'_>, parent_id: Option<&str>) -> Result<i64, String> {
+fn next_playlist_sort_order(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+) -> Result<i64, String> {
     let max_sort_order: Option<i64> = transaction
         .query_row(
             "
@@ -2040,7 +2692,9 @@ fn fetch_playlist_track_song_ids(
 
     let mut song_ids = Vec::new();
     for row in rows {
-        song_ids.push(row.map_err(|error| format!("failed to decode playlist track order row: {error}"))?);
+        song_ids.push(
+            row.map_err(|error| format!("failed to decode playlist track order row: {error}"))?,
+        );
     }
     Ok(song_ids)
 }
@@ -2058,7 +2712,9 @@ fn rebalance_playlist_track_positions(
             WHERE playlist_id = ?1 AND song_id = ?2
             ",
         )
-        .map_err(|error| format!("failed to prepare playlist position rebalance statement: {error}"))?;
+        .map_err(|error| {
+            format!("failed to prepare playlist position rebalance statement: {error}")
+        })?;
 
     for (position, song_id) in song_ids.iter().enumerate() {
         update_statement
@@ -2068,8 +2724,181 @@ fn rebalance_playlist_track_positions(
     Ok(())
 }
 
+fn get_tag_by_id(connection: &Connection, tag_id: &str) -> Result<Tag, String> {
+    connection
+        .query_row(
+            "
+            SELECT id, name, color
+            FROM tags
+            WHERE id = ?1
+            ",
+            params![tag_id],
+            |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    color: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|error| format!("failed to load tag {tag_id}: {error}"))
+}
+
+fn normalize_tag_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(String::from("tag name cannot be empty"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_tag_color(color: &str) -> String {
+    let trimmed = color.trim();
+    if trimmed.starts_with('#') && (trimmed.len() == 7 || trimmed.len() == 4) {
+        return trimmed.to_string();
+    }
+    String::from("#A8D8EA")
+}
+
+fn normalize_string_ids(values: &[String]) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut normalized = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    normalized
+}
+
+fn normalize_tag_ids(tag_ids: &[String]) -> Vec<String> {
+    normalize_string_ids(tag_ids)
+}
+
+fn build_placeholders(count: usize) -> String {
+    (0..count).map(|_| "?").collect::<Vec<_>>().join(", ")
+}
+
+fn build_song_tag_clause_values(tag_ids: &[String]) -> (String, Vec<SqlValue>) {
+    let normalized_tag_ids = normalize_tag_ids(tag_ids);
+    if normalized_tag_ids.is_empty() {
+        return (String::new(), Vec::new());
+    }
+
+    let placeholders = build_placeholders(normalized_tag_ids.len());
+    let mut values = normalized_tag_ids
+        .iter()
+        .cloned()
+        .map(SqlValue::from)
+        .collect::<Vec<_>>();
+    values.push(SqlValue::Integer(normalized_tag_ids.len() as i64));
+
+    (
+        format!(
+            "
+              AND s.id IN (
+                  SELECT st.song_id
+                  FROM song_tags st
+                  WHERE st.tag_id IN ({placeholders})
+                  GROUP BY st.song_id
+                  HAVING COUNT(DISTINCT st.tag_id) = ?
+              )
+            "
+        ),
+        values,
+    )
+}
+
+fn hydrate_song_tags(connection: &Connection, songs: &mut [SongListItem]) -> Result<(), String> {
+    if songs.is_empty() {
+        return Ok(());
+    }
+
+    let mut song_ids = Vec::with_capacity(songs.len());
+    let mut seen = HashSet::<String>::new();
+    for song in songs.iter() {
+        if seen.insert(song.id.clone()) {
+            song_ids.push(song.id.clone());
+        }
+    }
+
+    let placeholders = build_placeholders(song_ids.len());
+    let query = format!(
+        "
+        SELECT st.song_id, t.id, t.name, t.color
+        FROM song_tags st
+        INNER JOIN tags t ON t.id = st.tag_id
+        WHERE st.song_id IN ({placeholders})
+        ORDER BY t.name COLLATE NOCASE ASC
+        "
+    );
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|error| format!("failed to prepare song tag hydration query: {error}"))?;
+
+    let rows = statement
+        .query_map(
+            params_from_iter(song_ids.into_iter().map(SqlValue::from)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Tag {
+                        id: row.get(1)?,
+                        name: row.get(2)?,
+                        color: row.get(3)?,
+                    },
+                ))
+            },
+        )
+        .map_err(|error| format!("failed to query song tags: {error}"))?;
+
+    let mut tags_by_song_id = HashMap::<String, Vec<Tag>>::new();
+    for row in rows {
+        let (song_id, tag) =
+            row.map_err(|error| format!("failed to decode song tag row: {error}"))?;
+        tags_by_song_id.entry(song_id).or_default().push(tag);
+    }
+
+    for song in songs {
+        song.tags = tags_by_song_id.remove(&song.id).unwrap_or_default();
+    }
+
+    Ok(())
+}
+
+fn split_search_query(query: &str) -> (String, Vec<String>) {
+    let mut text_terms = Vec::new();
+    let mut tag_terms = Vec::new();
+
+    for raw_term in query.split_whitespace() {
+        let lower = raw_term.to_ascii_lowercase();
+        if lower.starts_with("tag:") {
+            let raw_name = raw_term
+                .split_once(':')
+                .map(|(_, value)| value)
+                .unwrap_or_default()
+                .trim();
+            if !raw_name.is_empty() {
+                tag_terms.push(raw_name.to_string());
+            }
+            continue;
+        }
+        text_terms.push(raw_term);
+    }
+
+    (text_terms.join(" "), normalize_string_ids(&tag_terms))
+}
+
 fn bool_to_i64(value: bool) -> i64 {
-    if value { 1 } else { 0 }
+    if value {
+        1
+    } else {
+        0
+    }
 }
 
 fn build_fts_query(query: &str) -> Option<String> {
@@ -2159,13 +2988,24 @@ fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
         connection.execute("INSERT INTO schema_migrations (version) VALUES (4)", [])?;
     }
 
+    let migration_5_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !migration_5_applied {
+        connection.execute_batch(MIGRATION_0005)?;
+        connection.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])?;
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, build_fts_query, run_migrations};
-    use rusqlite::{Connection, params};
+    use super::{build_fts_query, run_migrations, Database};
+    use rusqlite::{params, Connection};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -2235,19 +3075,22 @@ mod tests {
         assert_eq!(playlists_table_exists, 1);
         assert_eq!(playlist_tracks_table_exists, 1);
 
-        let migration_4_applied: i64 = connection
+        let migration_5_applied: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 4",
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 5",
                 [],
                 |row| row.get(0),
             )
-            .expect("failed to check migration 4");
-        assert_eq!(migration_4_applied, 1);
+            .expect("failed to check migration 5");
+        assert_eq!(migration_5_applied, 1);
     }
 
     #[test]
     fn builds_expected_fts_query() {
-        assert_eq!(build_fts_query("hello world"), Some(String::from("hello* AND world*")));
+        assert_eq!(
+            build_fts_query("hello world"),
+            Some(String::from("hello* AND world*"))
+        );
         assert_eq!(build_fts_query("hello!!!"), Some(String::from("hello*")));
         assert_eq!(build_fts_query("   "), None);
     }
@@ -2303,11 +3146,13 @@ mod tests {
         };
 
         let songs_by_play_count = db
-            .get_songs(10, 0, "play_count", "desc")
+            .get_songs(10, 0, "play_count", "desc", &[])
             .expect("failed to sort songs by play count");
         assert_eq!(songs_by_play_count[0].id, "song-2");
 
-        let albums = db.get_albums(10, 0, "name", "asc").expect("failed to query albums");
+        let albums = db
+            .get_albums(10, 0, "name", "asc")
+            .expect("failed to query albums");
         assert_eq!(albums.len(), 2);
 
         let artists = db
@@ -2472,8 +3317,20 @@ mod tests {
         let tracks_after_insert = db
             .playlist_get_tracks(&playlist.id)
             .expect("failed to list tracks after insert");
-        assert_eq!(tracks_after_insert.iter().map(|track| track.song.id.as_str()).collect::<Vec<_>>(), vec!["song-1", "song-4", "song-2", "song-3"]);
-        assert_eq!(tracks_after_insert.iter().map(|track| track.position).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        assert_eq!(
+            tracks_after_insert
+                .iter()
+                .map(|track| track.song.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["song-1", "song-4", "song-2", "song-3"]
+        );
+        assert_eq!(
+            tracks_after_insert
+                .iter()
+                .map(|track| track.position)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
 
         db.playlist_remove_songs(&playlist.id, &[String::from("song-2")])
             .expect("failed to remove song");
@@ -2486,7 +3343,106 @@ mod tests {
         let tracks_after_reorder = db
             .playlist_get_tracks(&playlist.id)
             .expect("failed to list tracks after reorder");
-        assert_eq!(tracks_after_reorder.iter().map(|track| track.song.id.as_str()).collect::<Vec<_>>(), vec!["song-3", "song-1", "song-4"]);
-        assert_eq!(tracks_after_reorder.iter().map(|track| track.position).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            tracks_after_reorder
+                .iter()
+                .map(|track| track.song.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["song-3", "song-1", "song-4"]
+        );
+        assert_eq!(
+            tracks_after_reorder
+                .iter()
+                .map(|track| track.position)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn supports_phase_4_tags_crud_assignment_and_filters() {
+        let db = test_db();
+        seed_song(&db, "song-1", "Song 1");
+        seed_song(&db, "song-2", "Song 2");
+        seed_song(&db, "song-3", "Song 3");
+
+        let chill = db
+            .tags_create("Chill", "#A8D8EA")
+            .expect("failed to create chill tag");
+        let road = db
+            .tags_create("Road", "#FFC0CB")
+            .expect("failed to create road tag");
+
+        db.tags_assign(
+            &[String::from("song-1"), String::from("song-2")],
+            std::slice::from_ref(&chill.id),
+        )
+        .expect("failed to assign chill tag");
+        db.tags_assign(&[String::from("song-2")], std::slice::from_ref(&road.id))
+            .expect("failed to assign road tag");
+
+        let chill_count = db
+            .get_song_count(std::slice::from_ref(&chill.id))
+            .expect("failed to count chill songs");
+        assert_eq!(chill_count, 2);
+
+        let chill_and_road_count = db
+            .get_song_count(&[chill.id.clone(), road.id.clone()])
+            .expect("failed to count chill+road songs");
+        assert_eq!(chill_and_road_count, 1);
+
+        let chill_search = db
+            .search_library("tag:chill", 25, &[])
+            .expect("failed to search by inline tag");
+        assert_eq!(chill_search.songs.len(), 2);
+
+        let renamed = db
+            .tags_rename(&chill.id, "Calm")
+            .expect("failed to rename tag");
+        assert_eq!(renamed.name, "Calm");
+        let recolored = db
+            .tags_set_color(&chill.id, "#99AA77")
+            .expect("failed to recolor tag");
+        assert_eq!(recolored.color, "#99AA77");
+
+        db.tags_delete(&road.id).expect("failed to delete road tag");
+        let remaining_tags = db.tags_list().expect("failed to list tags");
+        assert_eq!(remaining_tags.len(), 1);
+        assert_eq!(remaining_tags[0].id, chill.id);
+    }
+
+    #[test]
+    fn supports_phase_4_comment_custom_start_and_missing_song_filtering() {
+        let db = test_db();
+        seed_song(&db, "song-1", "Song 1");
+        seed_song(&db, "song-2", "Song 2");
+
+        db.song_update_comment("song-1", Some("favorite intro"))
+            .expect("failed to update comment");
+        db.song_set_custom_start("song-1", 12_000)
+            .expect("failed to update custom start");
+
+        let songs = db
+            .get_songs(10, 0, "title", "asc", &[])
+            .expect("failed to list songs");
+        let song_1 = songs
+            .iter()
+            .find(|song| song.id == "song-1")
+            .expect("missing song-1");
+        assert_eq!(song_1.comment.as_deref(), Some("favorite intro"));
+        assert_eq!(song_1.custom_start_ms, 12_000);
+
+        db.mark_songs_missing_by_paths(&[String::from("/music/song-1.mp3")])
+            .expect("failed to mark missing song");
+
+        let visible_count = db
+            .get_song_count(&[])
+            .expect("failed to count visible songs");
+        assert_eq!(visible_count, 1);
+
+        let playback_error = db
+            .get_song_for_playback("song-1")
+            .expect_err("missing song should not be playable");
+        assert!(playback_error.contains("failed to load song for playback"));
     }
 }

@@ -9,10 +9,16 @@ export type SongSortField =
 export type AlbumSortField = "name" | "artist" | "year" | "date_added";
 export type ArtistSortField = "name" | "play_count";
 export type SortOrder = "asc" | "desc";
-export type LibraryView = "songs" | "albums" | "artists" | "playlist";
+export type LibraryView = "songs" | "albums" | "artists" | "playlist" | "settings";
 export type RepeatMode = "off" | "all" | "one";
 
 export type PlaybackState = "playing" | "paused" | "stopped";
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+}
 
 export interface SongListItem {
   id: string;
@@ -24,6 +30,8 @@ export interface SongListItem {
   file_path: string;
   custom_start_ms: number;
   play_count: number;
+  comment: string | null;
+  tags: Tag[];
   date_added: string | null;
 }
 
@@ -112,6 +120,11 @@ export interface AudioTrackEndedEvent {
 
 export interface AudioErrorEvent {
   message: string;
+}
+
+export interface LibraryFileChangedEvent {
+  changed_paths: string[];
+  reason: string;
 }
 
 export interface ItunesPreview {
