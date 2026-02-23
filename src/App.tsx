@@ -78,6 +78,7 @@ import type {
 
 const SONG_PAGE_SIZE = 250;
 const PLAYLIST_PAGE_SIZE = 250;
+const SONG_IDS_BATCH_SIZE = 400;
 const SONG_ROW_HEIGHT = 54;
 const SEARCH_DEBOUNCE_MS = 150;
 const SEARCH_RESULT_LIMIT = 20;
@@ -303,6 +304,8 @@ function App() {
   const perfPlaylistOpenRef = useRef<{ playlistId: string; startedAt: number } | null>(null);
   const perfPlayRequestRef = useRef<{ songId: string; startedAt: number } | null>(null);
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
+  const queueHydrationTokenRef = useRef(0);
+  const pendingQueueHydrationRef = useRef<{ token: number; promise: Promise<void> } | null>(null);
 
   const [albumGridWidth, setAlbumGridWidth] = useState(920);
   const [playlistReorderMode, setPlaylistReorderMode] = useState(false);
@@ -343,6 +346,7 @@ function App() {
     estimateSize: () => 56,
     overscan: 8,
   });
+  const songVirtualRows = songVirtualizer.getVirtualItems();
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -441,6 +445,44 @@ function App() {
     }
     const elapsedMs = performance.now() - startedAt;
     console.debug(`[perf] ${label} ${elapsedMs.toFixed(1)}ms${extra ? ` (${extra})` : ""}`);
+  }, []);
+
+  const beginPlaybackRequest = useCallback(() => {
+    const nextToken = queueHydrationTokenRef.current + 1;
+    queueHydrationTokenRef.current = nextToken;
+    pendingQueueHydrationRef.current = null;
+    return nextToken;
+  }, []);
+
+  const isPlaybackRequestCurrent = useCallback((token: number, expectedSongId?: string) => {
+    if (queueHydrationTokenRef.current !== token) {
+      return false;
+    }
+    if (!expectedSongId) {
+      return true;
+    }
+    return usePlayerStore.getState().nowPlaying?.id === expectedSongId;
+  }, []);
+
+  const registerQueueHydration = useCallback((token: number, promise: Promise<void>) => {
+    pendingQueueHydrationRef.current = { token, promise };
+    void promise.finally(() => {
+      if (pendingQueueHydrationRef.current?.token === token) {
+        pendingQueueHydrationRef.current = null;
+      }
+    });
+  }, []);
+
+  const waitForActiveQueueHydration = useCallback(async () => {
+    const pending = pendingQueueHydrationRef.current;
+    if (!pending || pending.token !== queueHydrationTokenRef.current) {
+      return;
+    }
+    try {
+      await pending.promise;
+    } catch {
+      // Hydration errors are reported by the hydration task itself.
+    }
   }, []);
 
   const resetSongPages = useCallback(() => {
@@ -570,6 +612,22 @@ function App() {
     return result;
   }, [selectedTagFilterIds, songOrder, songSort]);
 
+  const loadSongsByIdsInBatches = useCallback(async (songIds: string[]) => {
+    const dedupedSongIds = Array.from(new Set(songIds));
+    if (dedupedSongIds.length === 0) {
+      return [] as SongListItem[];
+    }
+
+    const result: SongListItem[] = [];
+    for (let offset = 0; offset < dedupedSongIds.length; offset += SONG_IDS_BATCH_SIZE) {
+      const batch = dedupedSongIds.slice(offset, offset + SONG_IDS_BATCH_SIZE);
+      const chunk = await libraryApi.getSongsByIds(batch);
+      result.push(...chunk);
+    }
+
+    return result;
+  }, []);
+
   const refreshAlbums = useCallback(async () => {
     setIsLoadingAlbums(true);
     try {
@@ -606,11 +664,21 @@ function App() {
   }, []);
 
   const replaceQueueAndPlay = useCallback(
-    async (nextQueue: SongListItem[], startIndex: number, startMs?: number) => {
+    async (
+      nextQueue: SongListItem[],
+      startIndex: number,
+      startMs?: number,
+      options?: { requestToken?: number; sourceLabel?: string | null },
+    ) => {
       if (startIndex < 0 || startIndex >= nextQueue.length) {
         return;
       }
 
+      const requestToken = options?.requestToken ?? beginPlaybackRequest();
+      if (!isPlaybackRequestCurrent(requestToken)) {
+        return;
+      }
+      const sourceLabel = options?.sourceLabel ?? queueSourceLabel;
       const song = nextQueue[startIndex];
       setQueue(nextQueue, startIndex);
       persistQueue(nextQueue, startIndex);
@@ -621,12 +689,17 @@ function App() {
 
       perfPlayRequestRef.current = { songId: song.id, startedAt: performance.now() };
       await audioApi.play(song.id, startMs);
+      if (!isPlaybackRequestCurrent(requestToken, song.id)) {
+        return;
+      }
       onSongStarted(song);
       triggerStatsRefresh();
       setErrorMessage(null);
-      setPlayingFrom(nextQueue, queueSourceLabel, startIndex + 1);
+      setPlayingFrom(nextQueue, sourceLabel, startIndex + 1);
     },
     [
+      beginPlaybackRequest,
+      isPlaybackRequestCurrent,
       onSongStarted,
       persistQueue,
       queueSourceLabel,
@@ -641,16 +714,31 @@ function App() {
   );
 
   const playSong = useCallback(
-    async (song: SongListItem, startMs?: number) => {
+    async (song: SongListItem, startMs?: number, requestToken?: number) => {
+      const activeToken = requestToken ?? beginPlaybackRequest();
+      if (!isPlaybackRequestCurrent(activeToken)) {
+        return;
+      }
       perfPlayRequestRef.current = { songId: song.id, startedAt: performance.now() };
       await audioApi.play(song.id, startMs);
+      if (!isPlaybackRequestCurrent(activeToken, song.id)) {
+        return;
+      }
       setNowPlaying(song);
       setPlaybackState("playing");
       setPosition(startMs ?? song.custom_start_ms ?? 0, song.duration_ms);
       onSongStarted(song);
       triggerStatsRefresh();
     },
-    [setNowPlaying, setPlaybackState, setPosition, onSongStarted, triggerStatsRefresh],
+    [
+      beginPlaybackRequest,
+      isPlaybackRequestCurrent,
+      setNowPlaying,
+      setPlaybackState,
+      setPosition,
+      onSongStarted,
+      triggerStatsRefresh,
+    ],
   );
 
   const playQueueIndex = useCallback(
@@ -670,36 +758,42 @@ function App() {
   );
 
   const playNext = useCallback(() => {
-    if (repeatMode === "one" && nowPlaying) {
-      void playSong(nowPlaying).catch((error: unknown) => setErrorMessage(String(error)));
-      return;
-    }
+    void (async () => {
+      await waitForActiveQueueHydration();
 
-    const manualNext = shiftNextSong();
-    if (manualNext) {
-      void playSong(manualNext).catch((error: unknown) => setErrorMessage(String(error)));
-      return;
-    }
-
-    if (queue.length === 0) {
-      return;
-    }
-
-    if (currentIndex === null) {
-      void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
-      return;
-    }
-
-    if (currentIndex >= queue.length - 1) {
-      if (repeatMode === "all") {
-        void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
-      } else {
-        setPlaybackState("stopped");
+      if (repeatMode === "one" && nowPlaying) {
+        void playSong(nowPlaying).catch((error: unknown) => setErrorMessage(String(error)));
+        return;
       }
-      return;
-    }
 
-    void playQueueIndex(currentIndex + 1).catch((error: unknown) => setErrorMessage(String(error)));
+      const manualNext = shiftNextSong();
+      if (manualNext) {
+        void playSong(manualNext).catch((error: unknown) => setErrorMessage(String(error)));
+        return;
+      }
+
+      if (queue.length === 0) {
+        return;
+      }
+
+      if (currentIndex === null) {
+        void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
+        return;
+      }
+
+      if (currentIndex >= queue.length - 1) {
+        if (repeatMode === "all") {
+          void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
+        } else {
+          setPlaybackState("stopped");
+        }
+        return;
+      }
+
+      void playQueueIndex(currentIndex + 1).catch((error: unknown) =>
+        setErrorMessage(String(error)),
+      );
+    })();
   }, [
     currentIndex,
     nowPlaying,
@@ -709,38 +803,52 @@ function App() {
     repeatMode,
     setPlaybackState,
     shiftNextSong,
+    waitForActiveQueueHydration,
   ]);
 
   const playPrevious = useCallback(() => {
-    if (queue.length === 0) {
-      return;
-    }
+    void (async () => {
+      await waitForActiveQueueHydration();
 
-    const { positionMs, durationMs } = usePlayerStore.getState();
-    if (positionMs > 3000) {
-      void audioApi.seek(0).catch((error: unknown) => setErrorMessage(String(error)));
-      setPosition(0, durationMs);
-      return;
-    }
-
-    if (currentIndex === null) {
-      void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
-      return;
-    }
-
-    if (currentIndex === 0) {
-      if (repeatMode === "all") {
-        void playQueueIndex(queue.length - 1).catch((error: unknown) =>
-          setErrorMessage(String(error)),
-        );
-      } else {
-        void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
+      if (queue.length === 0) {
+        return;
       }
-      return;
-    }
 
-    void playQueueIndex(currentIndex - 1).catch((error: unknown) => setErrorMessage(String(error)));
-  }, [currentIndex, playQueueIndex, queue.length, repeatMode, setPosition]);
+      const { positionMs, durationMs } = usePlayerStore.getState();
+      if (positionMs > 3000) {
+        void audioApi.seek(0).catch((error: unknown) => setErrorMessage(String(error)));
+        setPosition(0, durationMs);
+        return;
+      }
+
+      if (currentIndex === null) {
+        void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
+        return;
+      }
+
+      if (currentIndex === 0) {
+        if (repeatMode === "all") {
+          void playQueueIndex(queue.length - 1).catch((error: unknown) =>
+            setErrorMessage(String(error)),
+          );
+        } else {
+          void playQueueIndex(0).catch((error: unknown) => setErrorMessage(String(error)));
+        }
+        return;
+      }
+
+      void playQueueIndex(currentIndex - 1).catch((error: unknown) =>
+        setErrorMessage(String(error)),
+      );
+    })();
+  }, [
+    currentIndex,
+    playQueueIndex,
+    queue.length,
+    repeatMode,
+    setPosition,
+    waitForActiveQueueHydration,
+  ]);
 
   const handleTogglePlayback = useCallback(async () => {
     const playbackState = usePlayerStore.getState().playbackState;
@@ -1189,7 +1297,7 @@ function App() {
         .filter((song): song is SongListItem => Boolean(song));
 
       try {
-        const freshSongs = await libraryApi.getSongsByIds(deduped);
+        const freshSongs = await loadSongsByIdsInBatches(deduped);
         if (freshSongs.length > 0) {
           targetSongs = freshSongs;
         }
@@ -1211,7 +1319,7 @@ function App() {
       setManageTagsSelection(baseline);
       setShowManageTagsDialog(true);
     },
-    [songLookupById],
+    [loadSongsByIdsInBatches, songLookupById],
   );
 
   const applyManageTags = async () => {
@@ -1633,17 +1741,52 @@ function App() {
         return;
       }
 
-      const allSongs = await loadAllSongsForCurrentSort();
-      const startIndex = allSongs.findIndex((song) => song.id === clickedSong.id);
-      if (startIndex < 0) {
-        return;
-      }
+      const sourceLabel = "Library";
+      const requestToken = beginPlaybackRequest();
 
-      setQueueSourceSongs(allSongs);
-      setQueueSourceLabel("Library");
-      await replaceQueueAndPlay(allSongs, startIndex);
+      setQueueSourceSongs([clickedSong]);
+      setQueueSourceLabel(sourceLabel);
+      await replaceQueueAndPlay([clickedSong], 0, undefined, {
+        requestToken,
+        sourceLabel,
+      });
+
+      const hydrationPromise = (async () => {
+        const allSongs = await loadAllSongsForCurrentSort();
+        const startIndex = allSongs.findIndex((song) => song.id === clickedSong.id);
+        if (startIndex < 0) {
+          return;
+        }
+        if (!isPlaybackRequestCurrent(requestToken, clickedSong.id)) {
+          return;
+        }
+
+        setQueueSourceSongs(allSongs);
+        setQueueSourceLabel(sourceLabel);
+        setQueue(allSongs, startIndex);
+        persistQueue(allSongs, startIndex);
+        setCurrentIndex(startIndex);
+        setPlayingFrom(allSongs, sourceLabel, startIndex + 1);
+      })().catch((error: unknown) => {
+        if (queueHydrationTokenRef.current === requestToken) {
+          setErrorMessage(String(error));
+        }
+      });
+
+      registerQueueHydration(requestToken, hydrationPromise);
     },
-    [loadAllSongsForCurrentSort, replaceQueueAndPlay, songsByIndex],
+    [
+      beginPlaybackRequest,
+      isPlaybackRequestCurrent,
+      loadAllSongsForCurrentSort,
+      persistQueue,
+      registerQueueHydration,
+      replaceQueueAndPlay,
+      setCurrentIndex,
+      setPlayingFrom,
+      setQueue,
+      songsByIndex,
+    ],
   );
 
   const playFromPlaylistIndex = useCallback(
@@ -1655,30 +1798,83 @@ function App() {
         return;
       }
       const orderedSongIds = activePlaylistTrackIds;
+      const startSongId = orderedSongIds[index];
+      const sourceLabel = activePlaylist.name;
 
-      const songsById = new Map(songLookupById);
-      const missingSongIds = orderedSongIds.filter((songId) => !songsById.has(songId));
-      if (missingSongIds.length > 0) {
-        const fetchedSongs = await libraryApi.getSongsByIds(missingSongIds);
-        for (const song of fetchedSongs) {
-          songsById.set(song.id, song);
-        }
+      let startSong =
+        activePlaylistTracksByIndex[index]?.song ?? songLookupById.get(startSongId) ?? null;
+      if (!startSong) {
+        const fetched = await loadSongsByIdsInBatches([startSongId]);
+        startSong = fetched[0] ?? null;
       }
 
-      const songs = orderedSongIds
-        .map((songId) => songsById.get(songId))
-        .filter((song): song is SongListItem => Boolean(song));
-      const startSongId = orderedSongIds[index];
-      const startIndex = songs.findIndex((song) => song.id === startSongId);
-      if (startIndex < 0) {
+      if (!startSong) {
         return;
       }
 
-      setQueueSourceSongs(songs);
-      setQueueSourceLabel(activePlaylist.name);
-      await replaceQueueAndPlay(songs, startIndex);
+      const requestToken = beginPlaybackRequest();
+
+      setQueueSourceSongs([startSong]);
+      setQueueSourceLabel(sourceLabel);
+      await replaceQueueAndPlay([startSong], 0, undefined, {
+        requestToken,
+        sourceLabel,
+      });
+
+      const hydrationPromise = (async () => {
+        const songsById = new Map(songLookupById);
+        songsById.set(startSong.id, startSong);
+
+        const missingSongIds = Array.from(
+          new Set(orderedSongIds.filter((songId) => !songsById.has(songId))),
+        );
+        if (missingSongIds.length > 0) {
+          const fetchedSongs = await loadSongsByIdsInBatches(missingSongIds);
+          for (const song of fetchedSongs) {
+            songsById.set(song.id, song);
+          }
+        }
+
+        const songs = orderedSongIds
+          .map((songId) => songsById.get(songId))
+          .filter((song): song is SongListItem => Boolean(song));
+        const startIndex = songs.findIndex((song) => song.id === startSongId);
+        if (startIndex < 0) {
+          return;
+        }
+        if (!isPlaybackRequestCurrent(requestToken, startSongId)) {
+          return;
+        }
+
+        setQueueSourceSongs(songs);
+        setQueueSourceLabel(sourceLabel);
+        setQueue(songs, startIndex);
+        persistQueue(songs, startIndex);
+        setCurrentIndex(startIndex);
+        setPlayingFrom(songs, sourceLabel, startIndex + 1);
+      })().catch((error: unknown) => {
+        if (queueHydrationTokenRef.current === requestToken) {
+          setErrorMessage(String(error));
+        }
+      });
+
+      registerQueueHydration(requestToken, hydrationPromise);
     },
-    [activePlaylist, activePlaylistTrackIds, replaceQueueAndPlay, songLookupById],
+    [
+      activePlaylist,
+      activePlaylistTrackIds,
+      activePlaylistTracksByIndex,
+      beginPlaybackRequest,
+      isPlaybackRequestCurrent,
+      loadSongsByIdsInBatches,
+      persistQueue,
+      registerQueueHydration,
+      replaceQueueAndPlay,
+      setCurrentIndex,
+      setPlayingFrom,
+      setQueue,
+      songLookupById,
+    ],
   );
 
   const removeSelectedFromActivePlaylist = useCallback(async () => {
@@ -1877,8 +2073,7 @@ function App() {
       return;
     }
 
-    void libraryApi
-      .getSongsByIds(queueSongIds)
+    void loadSongsByIdsInBatches(queueSongIds)
       .then((restoredSongs) => {
         const restoredIndex =
           queueCurrentIndex !== null && queueCurrentIndex < restoredSongs.length
@@ -1898,6 +2093,7 @@ function App() {
       .catch((error: unknown) => setErrorMessage(String(error)));
   }, [
     queueCurrentIndex,
+    loadSongsByIdsInBatches,
     queueSongIds,
     queueSourceLabel,
     setCurrentIndex,
@@ -1907,19 +2103,17 @@ function App() {
   ]);
 
   useEffect(() => {
-    const virtualRows = songVirtualizer.getVirtualItems();
-
     if (activeView !== "songs" || songCount === 0) {
       return;
     }
 
-    if (virtualRows.length === 0) {
+    if (songVirtualRows.length === 0) {
       void ensureSongPage(0);
       return;
     }
 
-    const first = virtualRows[0].index;
-    const last = virtualRows[virtualRows.length - 1].index;
+    const first = songVirtualRows[0].index;
+    const last = songVirtualRows[songVirtualRows.length - 1].index;
     const firstPage = Math.floor(first / SONG_PAGE_SIZE);
     const lastPage = Math.floor(last / SONG_PAGE_SIZE);
 
@@ -1928,7 +2122,7 @@ function App() {
         void ensureSongPage(page);
       }
     }
-  }, [activeView, ensureSongPage, songCount, songVirtualizer]);
+  }, [activeView, ensureSongPage, songCount, songVirtualRows]);
 
   useEffect(() => {
     const observer = new ResizeObserver((entries) => {
@@ -2197,7 +2391,6 @@ function App() {
     return Math.min(100, Math.round((itunesProgress.processed / itunesProgress.total) * 100));
   }, [itunesProgress]);
 
-  const songVirtualRows = songVirtualizer.getVirtualItems();
   const albumVirtualRows = albumsVirtualizer.getVirtualItems();
   const artistVirtualRows = artistsVirtualizer.getVirtualItems();
 

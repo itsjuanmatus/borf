@@ -1,8 +1,8 @@
 use crate::db::SongPlaybackInfo;
-use rodio::{buffer::SamplesBuffer, Decoder, OutputStream, Sink, Source};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use serde::Serialize;
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::BufReader;
 use std::panic::{self, AssertUnwindSafe};
@@ -61,6 +61,23 @@ struct PlaybackContext {
 
 const DEFAULT_DECODED_TRACK_CACHE_BYTES: usize = 384 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SinkCreationMode {
+    Streaming,
+    DecodedCacheHit,
+    DecodedCacheMiss,
+}
+
+impl SinkCreationMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            SinkCreationMode::Streaming => "streaming",
+            SinkCreationMode::DecodedCacheHit => "decoded-cache-hit",
+            SinkCreationMode::DecodedCacheMiss => "decoded-cache-miss",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DecodedTrack {
     samples: Arc<[f32]>,
@@ -85,6 +102,72 @@ struct DecodedTrackCache {
     total_bytes: usize,
     order: VecDeque<String>,
     entries: HashMap<String, CachedDecodedTrack>,
+}
+
+struct DecodedTrackSource {
+    samples: Arc<[f32]>,
+    position: usize,
+    channels: u16,
+    sample_rate: u32,
+    total_duration: Duration,
+}
+
+impl DecodedTrackSource {
+    fn new(track: DecodedTrack, start_ms: u64) -> Self {
+        let channels = track.channels.max(1);
+        let sample_rate = track.sample_rate.max(1);
+        let total_samples = track.samples.len();
+        let channels_usize = channels as usize;
+
+        let start_frame = (start_ms.saturating_mul(sample_rate as u64) / 1000) as usize;
+        let mut start_index = start_frame.saturating_mul(channels_usize);
+        if start_index > total_samples {
+            start_index = total_samples;
+        } else {
+            start_index -= start_index % channels_usize;
+        }
+
+        let remaining_samples = total_samples.saturating_sub(start_index);
+        let remaining_frames = remaining_samples / channels_usize;
+        let remaining_duration_ms =
+            ((remaining_frames as f64 * 1000.0) / sample_rate as f64).round() as u64;
+
+        Self {
+            samples: track.samples,
+            position: start_index,
+            channels,
+            sample_rate,
+            total_duration: Duration::from_millis(remaining_duration_ms),
+        }
+    }
+}
+
+impl Iterator for DecodedTrackSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = self.samples.get(self.position).copied()?;
+        self.position += 1;
+        Some(sample)
+    }
+}
+
+impl Source for DecodedTrackSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        Some(self.samples.len().saturating_sub(self.position))
+    }
+
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        Some(self.total_duration)
+    }
 }
 
 impl DecodedTrackCache {
@@ -368,6 +451,7 @@ fn run_audio_thread(
     let mut volume = initial_volume.clamp(0.0, 1.0);
     let mut playback: Option<PlaybackContext> = None;
     let mut decoded_track_cache = DecodedTrackCache::new(DEFAULT_DECODED_TRACK_CACHE_BYTES);
+    let mut streaming_failures = HashSet::<String>::new();
 
     let _ = ready_tx.send(Ok(()));
 
@@ -378,17 +462,30 @@ fn run_audio_thread(
                 start_ms,
                 response,
             }) => {
+                let command_started_at = Instant::now();
+                let song_id = song.id.clone();
+                log::debug!(
+                    "audio play command received: song_id={} start_ms={:?}",
+                    song_id,
+                    start_ms
+                );
                 let result = run_command_safely("play", || {
                     handle_play(
                         &app_handle,
                         &stream_handle,
                         &mut playback,
                         &mut decoded_track_cache,
+                        &mut streaming_failures,
                         volume,
                         song,
                         start_ms,
                     )
                 });
+                log::debug!(
+                    "audio play command completed: song_id={} elapsed_ms={:.1}",
+                    song_id,
+                    command_started_at.elapsed().as_secs_f64() * 1000.0
+                );
                 if let Err(error) = &result {
                     AudioEngine::emit_error(&app_handle, error.clone());
                 }
@@ -420,6 +517,7 @@ fn run_audio_thread(
                         &stream_handle,
                         &mut playback,
                         &mut decoded_track_cache,
+                        &mut streaming_failures,
                         volume,
                         position_ms,
                     )
@@ -448,6 +546,7 @@ fn run_audio_thread(
             Ok(AudioCommand::ClearDecodedCache { response }) => {
                 let result = run_command_safely("clear-decoded-cache", || {
                     decoded_track_cache = DecodedTrackCache::new(DEFAULT_DECODED_TRACK_CACHE_BYTES);
+                    streaming_failures.clear();
                     Ok(())
                 });
                 if let Err(error) = &result {
@@ -496,10 +595,13 @@ fn handle_play(
     stream_handle: &rodio::OutputStreamHandle,
     playback: &mut Option<PlaybackContext>,
     decoded_track_cache: &mut DecodedTrackCache,
+    streaming_failures: &mut HashSet<String>,
     volume: f32,
     song: SongPlaybackInfo,
     start_ms: Option<u64>,
 ) -> Result<(), String> {
+    let started_at = Instant::now();
+    let song_id = song.id.clone();
     let duration_ms = resolve_duration_ms(&song);
     let desired_start_ms = start_ms.unwrap_or_else(|| song.custom_start_ms.max(0) as u64);
     let bounded_start_ms = desired_start_ms.min(duration_ms);
@@ -508,14 +610,21 @@ fn handle_play(
         existing.sink.stop();
     }
 
-    let sink = create_streaming_sink(
+    let (sink, sink_mode) = create_streaming_sink(
         stream_handle,
         &song.file_path,
         decoded_track_cache,
+        streaming_failures,
         volume,
         bounded_start_ms,
         PlaybackStatus::Playing,
     )?;
+    log::debug!(
+        "audio play sink mode: song_id={} mode={} start_ms={}",
+        song_id,
+        sink_mode.as_str(),
+        bounded_start_ms
+    );
 
     *playback = Some(PlaybackContext {
         sink,
@@ -528,6 +637,11 @@ fn handle_play(
     });
 
     emit_state(app_handle, "playing");
+    log::debug!(
+        "audio handle_play completed: song_id={} elapsed_ms={:.1}",
+        song_id,
+        started_at.elapsed().as_secs_f64() * 1000.0
+    );
     Ok(())
 }
 
@@ -577,6 +691,7 @@ fn handle_seek(
     stream_handle: &rodio::OutputStreamHandle,
     playback: &mut Option<PlaybackContext>,
     decoded_track_cache: &mut DecodedTrackCache,
+    streaming_failures: &mut HashSet<String>,
     volume: f32,
     position_ms: u64,
 ) -> Result<(), String> {
@@ -594,6 +709,7 @@ fn handle_seek(
             stream_handle,
             current,
             decoded_track_cache,
+            streaming_failures,
             volume,
             bounded_position,
         )?;
@@ -621,17 +737,25 @@ fn recreate_sink_from_offset(
     stream_handle: &rodio::OutputStreamHandle,
     current: &mut PlaybackContext,
     decoded_track_cache: &mut DecodedTrackCache,
+    streaming_failures: &mut HashSet<String>,
     volume: f32,
     offset_ms: u64,
 ) -> Result<(), String> {
-    let replacement_sink = create_streaming_sink(
+    let (replacement_sink, sink_mode) = create_streaming_sink(
         stream_handle,
         &current.file_path,
         decoded_track_cache,
+        streaming_failures,
         volume,
         offset_ms,
         current.status,
     )?;
+    log::debug!(
+        "audio seek recreated sink: song_id={} mode={} offset_ms={}",
+        current.song_id,
+        sink_mode.as_str(),
+        offset_ms
+    );
 
     current.sink.stop();
     current.sink = replacement_sink;
@@ -649,21 +773,27 @@ fn create_streaming_sink(
     stream_handle: &rodio::OutputStreamHandle,
     file_path: &str,
     decoded_track_cache: &mut DecodedTrackCache,
+    streaming_failures: &mut HashSet<String>,
     volume: f32,
     start_ms: u64,
     status: PlaybackStatus,
-) -> Result<Sink, String> {
+) -> Result<(Sink, SinkCreationMode), String> {
     let sink =
         Sink::try_new(stream_handle).map_err(|error| format!("failed to create sink: {error}"))?;
     sink.set_volume(volume);
 
-    let mut appended = false;
-    if should_use_streaming_decoder(file_path) {
+    if !streaming_failures.contains(file_path) {
         match try_append_streaming_source(&sink, file_path, start_ms) {
             Ok(()) => {
-                appended = true;
+                if status == PlaybackStatus::Paused {
+                    sink.pause();
+                } else {
+                    sink.play();
+                }
+                return Ok((sink, SinkCreationMode::Streaming));
             }
             Err(error) => {
+                streaming_failures.insert(file_path.to_string());
                 log::warn!(
                     "streaming decoder failed for {}; falling back to full decode: {}",
                     file_path,
@@ -671,32 +801,26 @@ fn create_streaming_sink(
                 );
             }
         }
+    } else {
+        log::debug!(
+            "skipping streaming decoder for {} due to memoized failure",
+            file_path
+        );
     }
 
-    if !appended {
-        let decoded_track = if let Some(cached_track) = decoded_track_cache.get(file_path) {
-            cached_track
-        } else {
-            let decoded = decode_track_with_symphonia(file_path)?;
-            decoded_track_cache.insert(file_path.to_string(), decoded.clone());
-            decoded
-        };
+    let (decoded_track, sink_mode) = if let Some(cached_track) = decoded_track_cache.get(file_path) {
+        (cached_track, SinkCreationMode::DecodedCacheHit)
+    } else {
+        let decoded = decode_track_with_symphonia(file_path)?;
+        decoded_track_cache.insert(file_path.to_string(), decoded.clone());
+        (decoded, SinkCreationMode::DecodedCacheMiss)
+    };
 
-        if decoded_track.samples.is_empty() {
-            return Err(String::from("decoded audio contained no samples"));
-        }
-
-        sink.append(SamplesBuffer::new(
-            decoded_track.channels,
-            decoded_track.sample_rate,
-            decoded_track.samples.as_ref().to_vec(),
-        ));
-
-        if start_ms > 0 {
-            sink.try_seek(Duration::from_millis(start_ms))
-                .map_err(|error| format!("failed to set initial playback position: {error}"))?;
-        }
+    if decoded_track.samples.is_empty() {
+        return Err(String::from("decoded audio contained no samples"));
     }
+
+    sink.append(DecodedTrackSource::new(decoded_track, start_ms));
 
     if status == PlaybackStatus::Paused {
         sink.pause();
@@ -704,7 +828,7 @@ fn create_streaming_sink(
         sink.play();
     }
 
-    Ok(sink)
+    Ok((sink, sink_mode))
 }
 
 fn resolve_duration_ms(song: &SongPlaybackInfo) -> u64 {
@@ -756,18 +880,6 @@ fn panic_payload_to_string(payload: Box<dyn Any + Send + 'static>) -> String {
         return message.clone();
     }
     String::from("unknown panic payload")
-}
-
-fn should_use_streaming_decoder(file_path: &str) -> bool {
-    let extension = Path::new(file_path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase());
-
-    !matches!(
-        extension.as_deref(),
-        Some("m4a" | "mp4" | "m4b" | "m4p" | "m4r" | "m4v" | "mov" | "aac" | "alac")
-    )
 }
 
 fn try_append_streaming_source(sink: &Sink, file_path: &str, start_ms: u64) -> Result<(), String> {
@@ -891,8 +1003,11 @@ fn decode_track_with_symphonia(file_path: &str) -> Result<DecodedTrack, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{DecodedTrack, DecodedTrackCache};
+    use super::{DecodedTrack, DecodedTrackCache, DecodedTrackSource};
+    use rodio::Source;
+    use std::collections::HashSet;
     use std::sync::Arc;
+    use std::time::Duration;
 
     fn fake_track(sample_count: usize) -> DecodedTrack {
         DecodedTrack {
@@ -900,6 +1015,17 @@ mod tests {
             channels: 2,
             sample_rate: 44_100,
             duration_ms: 1_000,
+        }
+    }
+
+    fn fake_track_with_samples(samples: Vec<f32>, channels: u16, sample_rate: u32) -> DecodedTrack {
+        let frame_count = samples.len() as f64 / channels as f64;
+        let duration_ms = (frame_count * 1000.0 / sample_rate as f64).round() as u64;
+        DecodedTrack {
+            samples: Arc::from(samples),
+            channels,
+            sample_rate,
+            duration_ms,
         }
     }
 
@@ -929,5 +1055,41 @@ mod tests {
 
         assert!(!cache.contains("big"));
         assert_eq!(cache.total_bytes(), 0);
+    }
+
+    #[test]
+    fn decoded_track_source_applies_start_offset_without_copying_samples() {
+        let track = fake_track_with_samples((0..12).map(|value| value as f32).collect(), 2, 2);
+        let source = DecodedTrackSource::new(track, 1_000);
+
+        assert_eq!(source.channels(), 2);
+        assert_eq!(source.sample_rate(), 2);
+        assert_eq!(source.total_duration(), Some(Duration::from_millis(2_000)));
+        assert_eq!(
+            source.collect::<Vec<_>>(),
+            vec![4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+        );
+    }
+
+    #[test]
+    fn decoded_track_source_handles_offset_beyond_track_length() {
+        let track = fake_track_with_samples((0..12).map(|value| value as f32).collect(), 2, 2);
+        let source = DecodedTrackSource::new(track, 10_000);
+
+        assert_eq!(source.total_duration(), Some(Duration::from_millis(0)));
+        assert!(source.collect::<Vec<_>>().is_empty());
+    }
+
+    #[test]
+    fn streaming_failure_memoization_skips_failed_file_until_cache_clear() {
+        let mut failures = HashSet::<String>::new();
+        let file_path = String::from("/music/failing-file.m4a");
+
+        assert!(!failures.contains(&file_path));
+        failures.insert(file_path.clone());
+        assert!(failures.contains(&file_path));
+
+        failures.clear();
+        assert!(!failures.contains(&file_path));
     }
 }
