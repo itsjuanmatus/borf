@@ -1,10 +1,11 @@
 use crate::db::SongPlaybackInfo;
-use rodio::{OutputStream, Sink, buffer::SamplesBuffer};
+use rodio::{buffer::SamplesBuffer, Decoder, OutputStream, Sink, Source};
 use serde::Serialize;
 use std::any::Any;
 use std::fs::File;
-use std::panic::{self, AssertUnwindSafe};
+use std::io::BufReader;
 use std::path::Path;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,6 +51,7 @@ enum PlaybackStatus {
 struct PlaybackContext {
     sink: Sink,
     song_id: String,
+    file_path: String,
     duration_ms: u64,
     base_position_ms: u64,
     started_at: Option<Instant>,
@@ -321,7 +323,13 @@ fn run_audio_thread(
                 response,
             }) => {
                 let result = run_command_safely("seek", || {
-                    handle_seek(&app_handle, &mut playback, position_ms)
+                    handle_seek(
+                        &app_handle,
+                        &stream_handle,
+                        &mut playback,
+                        volume,
+                        position_ms,
+                    )
                 });
                 if let Err(error) = &result {
                     AudioEngine::emit_error(&app_handle, error.clone());
@@ -388,41 +396,27 @@ fn handle_play(
     song: SongPlaybackInfo,
     start_ms: Option<u64>,
 ) -> Result<(), String> {
-    let decoded_track = decode_track_with_symphonia(&song.file_path)?;
-    if decoded_track.samples.is_empty() {
-        return Err(String::from("decoded audio contained no samples"));
-    }
-
-    let decoder_duration_ms = if song.duration_ms > 0 {
-        song.duration_ms as u64
-    } else {
-        decoded_track.duration_ms
-    };
+    let duration_ms = resolve_duration_ms(&song);
     let desired_start_ms = start_ms.unwrap_or_else(|| song.custom_start_ms.max(0) as u64);
+    let bounded_start_ms = desired_start_ms.min(duration_ms);
 
     if let Some(existing) = playback.take() {
         existing.sink.stop();
     }
 
-    let sink = Sink::try_new(stream_handle)
-        .map_err(|error| format!("failed to create playback sink: {error}"))?;
-    sink.set_volume(volume);
-    sink.append(SamplesBuffer::new(
-        decoded_track.channels,
-        decoded_track.sample_rate,
-        decoded_track.samples,
-    ));
-    let bounded_start_ms = desired_start_ms.min(decoder_duration_ms);
-    if bounded_start_ms > 0 {
-        sink.try_seek(Duration::from_millis(bounded_start_ms))
-            .map_err(|error| format!("failed to set initial playback position: {error}"))?;
-    }
-    sink.play();
+    let sink = create_streaming_sink(
+        stream_handle,
+        &song.file_path,
+        volume,
+        bounded_start_ms,
+        PlaybackStatus::Playing,
+    )?;
 
     *playback = Some(PlaybackContext {
         sink,
         song_id: song.id,
-        duration_ms: decoder_duration_ms,
+        file_path: song.file_path,
+        duration_ms,
         base_position_ms: bounded_start_ms,
         started_at: Some(Instant::now()),
         status: PlaybackStatus::Playing,
@@ -475,7 +469,9 @@ fn handle_resume(
 
 fn handle_seek(
     app_handle: &AppHandle,
+    stream_handle: &rodio::OutputStreamHandle,
     playback: &mut Option<PlaybackContext>,
+    volume: f32,
     position_ms: u64,
 ) -> Result<(), String> {
     let Some(current) = playback.as_mut() else {
@@ -483,17 +479,18 @@ fn handle_seek(
     };
 
     let bounded_position = position_ms.min(current.duration_ms);
-    current
-        .sink
-        .try_seek(Duration::from_millis(bounded_position))
-        .map_err(|error| format!("seek failed: {error}"))?;
+    let seek_result = current.sink.try_seek(Duration::from_millis(bounded_position));
 
-    current.base_position_ms = bounded_position;
-    current.started_at = if current.status == PlaybackStatus::Playing {
-        Some(Instant::now())
+    if seek_result.is_err() {
+        recreate_sink_from_offset(stream_handle, current, volume, bounded_position)?;
     } else {
-        None
-    };
+        current.base_position_ms = bounded_position;
+        current.started_at = if current.status == PlaybackStatus::Playing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+    }
 
     let _ = app_handle.emit(
         "audio:position-update",
@@ -504,6 +501,96 @@ fn handle_seek(
     );
 
     Ok(())
+}
+
+fn recreate_sink_from_offset(
+    stream_handle: &rodio::OutputStreamHandle,
+    current: &mut PlaybackContext,
+    volume: f32,
+    offset_ms: u64,
+) -> Result<(), String> {
+    let replacement_sink = create_streaming_sink(
+        stream_handle,
+        &current.file_path,
+        volume,
+        offset_ms,
+        current.status,
+    )?;
+
+    current.sink.stop();
+    current.sink = replacement_sink;
+    current.base_position_ms = offset_ms;
+    current.started_at = if current.status == PlaybackStatus::Playing {
+        Some(Instant::now())
+    } else {
+        None
+    };
+
+    Ok(())
+}
+
+fn create_streaming_sink(
+    stream_handle: &rodio::OutputStreamHandle,
+    file_path: &str,
+    volume: f32,
+    start_ms: u64,
+    status: PlaybackStatus,
+) -> Result<Sink, String> {
+    let sink =
+        Sink::try_new(stream_handle).map_err(|error| format!("failed to create sink: {error}"))?;
+    sink.set_volume(volume);
+
+    let mut appended = false;
+    if should_use_streaming_decoder(file_path) {
+        match try_append_streaming_source(&sink, file_path, start_ms) {
+            Ok(()) => {
+                appended = true;
+            }
+            Err(error) => {
+                log::warn!(
+                    "streaming decoder failed for {}; falling back to full decode: {}",
+                    file_path,
+                    error
+                );
+            }
+        }
+    }
+
+    if !appended {
+        let decoded_track = decode_track_with_symphonia(file_path)?;
+        if decoded_track.samples.is_empty() {
+            return Err(String::from("decoded audio contained no samples"));
+        }
+
+        sink.append(SamplesBuffer::new(
+            decoded_track.channels,
+            decoded_track.sample_rate,
+            decoded_track.samples,
+        ));
+
+        if start_ms > 0 {
+            sink.try_seek(Duration::from_millis(start_ms))
+                .map_err(|error| format!("failed to set initial playback position: {error}"))?;
+        }
+    }
+
+    if status == PlaybackStatus::Paused {
+        sink.pause();
+    } else {
+        sink.play();
+    }
+
+    Ok(sink)
+}
+
+fn resolve_duration_ms(song: &SongPlaybackInfo) -> u64 {
+    if song.duration_ms > 0 {
+        return song.duration_ms as u64;
+    }
+
+    decode_track_with_symphonia(&song.file_path)
+        .map(|decoded| decoded.duration_ms)
+        .unwrap_or(0)
 }
 
 fn current_position_ms(playback: &PlaybackContext) -> u64 {
@@ -545,6 +632,40 @@ fn panic_payload_to_string(payload: Box<dyn Any + Send + 'static>) -> String {
         return message.clone();
     }
     String::from("unknown panic payload")
+}
+
+fn should_use_streaming_decoder(file_path: &str) -> bool {
+    let extension = Path::new(file_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+
+    !matches!(
+        extension.as_deref(),
+        Some("m4a" | "mp4" | "m4b" | "m4p" | "m4r" | "m4v" | "mov" | "aac" | "alac")
+    )
+}
+
+fn try_append_streaming_source(sink: &Sink, file_path: &str, start_ms: u64) -> Result<(), String> {
+    let file = File::open(file_path)
+        .map_err(|error| format!("failed to open audio file for playback: {error}"))?;
+
+    let decoder = panic::catch_unwind(AssertUnwindSafe(|| Decoder::new(BufReader::new(file))))
+        .map_err(|payload| {
+            format!(
+                "streaming decoder panic during initialization: {}",
+                panic_payload_to_string(payload)
+            )
+        })?
+        .map_err(|error| format!("failed to initialize streaming decoder: {error}"))?;
+
+    if start_ms > 0 {
+        sink.append(decoder.skip_duration(Duration::from_millis(start_ms)));
+    } else {
+        sink.append(decoder);
+    }
+
+    Ok(())
 }
 
 fn decode_track_with_symphonia(file_path: &str) -> Result<DecodedTrack, String> {
@@ -623,8 +744,7 @@ fn decode_track_with_symphonia(file_path: &str) -> Result<DecodedTrack, String> 
         channels = decoded.spec().channels.count() as u16;
         sample_rate = decoded.spec().rate;
 
-        let mut sample_buffer =
-            SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
+        let mut sample_buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
         sample_buffer.copy_interleaved_ref(decoded);
         samples.extend_from_slice(sample_buffer.samples());
     }
