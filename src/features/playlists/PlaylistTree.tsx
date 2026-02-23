@@ -67,6 +67,7 @@ function TreeNode({
         onClick={() => {
           if (node.is_folder) {
             toggleFolder(node.id);
+            return;
           }
           onSelectPlaylist(node.id);
         }}
