@@ -1,17 +1,15 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Disc3, Play } from "lucide-react";
+import { Disc3 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "../lib/utils";
 
 interface SongArtworkProps {
   artworkPath: string | null;
-  onPlay?: () => void;
   className?: string;
   sizeClassName?: string;
-  playLabel?: string;
 }
 
-function resolveArtworkSrc(path: string | null): string | null {
+export function resolveArtworkSrc(path: string | null): string | null {
   if (!path) {
     return null;
   }
@@ -34,10 +32,8 @@ function resolveArtworkSrc(path: string | null): string | null {
 
 export function SongArtwork({
   artworkPath,
-  onPlay,
   className,
   sizeClassName = "h-8 w-8",
-  playLabel = "Play song",
 }: SongArtworkProps) {
   const src = useMemo(() => resolveArtworkSrc(artworkPath), [artworkPath]);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -68,23 +64,6 @@ export function SongArtwork({
         />
       ) : null}
 
-      {onPlay ? (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-night/45 opacity-0 transition-opacity duration-150 group-hover/song:opacity-100 group-hover/artwork:opacity-100">
-          <button
-            type="button"
-            className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-night shadow-sm transition-transform duration-150 hover:scale-105"
-            aria-label={playLabel}
-            title={playLabel}
-            onClick={(event) => {
-              event.stopPropagation();
-              event.preventDefault();
-              onPlay();
-            }}
-          >
-            <Play className="h-3.5 w-3.5 fill-current" />
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ListMusic,
   Pause,
@@ -51,6 +51,8 @@ interface TransportBarProps {
   onToggleUpNext: () => void;
   onVolumeChange: (volume: number) => void;
   onVolumeScrub?: (volume: number) => void;
+  onArtistClick: (artist: string) => void;
+  onAlbumClick: (album: string, albumArtist: string) => void;
   onSearchOpen: () => void;
 }
 
@@ -68,6 +70,8 @@ export function TransportBar({
   onToggleShuffle,
   onCycleRepeat,
   onSeek,
+  onArtistClick,
+  onAlbumClick,
   onToggleUpNext,
   onVolumeChange,
   onVolumeScrub,
@@ -79,9 +83,29 @@ export function TransportBar({
   const upNextOpen = useQueueStore((state) => state.isOpen);
   const [scrubValue, setScrubValue] = useState<number | null>(null);
   const [localVolume, setLocalVolume] = useState<number | null>(null);
+  const [artworkExpanded, setArtworkExpanded] = useState(false);
+  const artworkBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!artworkExpanded) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (artworkBtnRef.current && !artworkBtnRef.current.contains(e.target as Node)) {
+        setArtworkExpanded(false);
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setArtworkExpanded(false);
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [artworkExpanded]);
 
   return (
-    <header className="bg-night">
+    <header className="bg-night transition-all duration-300 ease-out">
       <div className="flex items-center px-4 py-2">
         {/* Window drag region */}
         <div className="w-28" />
@@ -187,10 +211,30 @@ export function TransportBar({
 
         {/* Artwork + info + progress — center */}
         <div className="flex min-w-0 items-center gap-3">
-          <SongArtwork
-            artworkPath={currentSong?.artwork_path ?? null}
-            sizeClassName="h-10 w-10"
-          />
+          <button
+            ref={artworkBtnRef}
+            type="button"
+            className={cn(
+              "shrink-0 transition-all duration-300 ease-out",
+              currentSong?.artwork_path
+                ? "cursor-pointer hover:opacity-90"
+                : "cursor-default",
+            )}
+            onClick={() => {
+              if (currentSong?.artwork_path) {
+                setArtworkExpanded((prev) => !prev);
+              }
+            }}
+            aria-label={artworkExpanded ? "Collapse artwork" : "Expand artwork"}
+          >
+            <SongArtwork
+              artworkPath={currentSong?.artwork_path ?? null}
+              sizeClassName={cn(
+                "transition-all duration-300 ease-out",
+                artworkExpanded ? "h-24 w-24 rounded-xl" : "h-10 w-10",
+              )}
+            />
+          </button>
           <div className="flex w-80 min-w-0 flex-col gap-0.5">
             {/* Title + artist */}
             <div className="min-w-0">
@@ -198,9 +242,27 @@ export function TransportBar({
                 {currentSong?.title ?? "Nothing playing"}
               </p>
               <p className="truncate text-xs text-cloud/50">
-                {currentSong
-                  ? `${currentSong.artist} — ${currentSong.album}`
-                  : "Double-click a song to start"}
+                {currentSong ? (
+                  <>
+                    <button
+                      type="button"
+                      className="hover:text-cloud/70 hover:underline"
+                      onClick={() => onArtistClick(currentSong.artist)}
+                    >
+                      {currentSong.artist}
+                    </button>
+                    <span> — </span>
+                    <button
+                      type="button"
+                      className="hover:text-cloud/70 hover:underline"
+                      onClick={() => onAlbumClick(currentSong.album, currentSong.artist)}
+                    >
+                      {currentSong.album}
+                    </button>
+                  </>
+                ) : (
+                  "Double-click a song to start"
+                )}
               </p>
             </div>
             {/* Progress scrubber */}

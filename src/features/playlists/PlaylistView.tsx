@@ -2,12 +2,22 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Clock3, GripVertical, ListMusic, Plus, Trash2 } from "lucide-react";
-import { type MouseEvent, useEffect, useRef } from "react";
+import { Clock3, GripVertical, ListMusic, ListPlus, Trash2 } from "lucide-react";
+import { type MouseEvent, useEffect, useMemo, useRef } from "react";
 import { SongArtwork } from "../../components/song-artwork";
+import { SongPlayButton } from "../../components/song-play-button";
 import { Button } from "../../components/ui/button";
+import {
+  SONG_OPTIONAL_COLUMN_CONFIG,
+  type SongOptionalColumnConfigItem,
+} from "../../lib/song-columns";
 import { cn } from "../../lib/utils";
-import type { DragSongPayload, PlaylistNode, PlaylistTrackItem } from "../../types";
+import type {
+  DragSongPayload,
+  PlaylistNode,
+  PlaylistTrackItem,
+  SongOptionalColumnKey,
+} from "../../types";
 
 const TRACK_ROW_HEIGHT = 54;
 const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
@@ -16,6 +26,7 @@ interface PlaylistViewProps {
   playlist: PlaylistNode | null;
   tracks: Array<PlaylistTrackItem | undefined>;
   trackCount: number;
+  visibleSongColumns: SongOptionalColumnKey[];
   currentSongId: string | null;
   selectedSongIds: string[];
   selectedSongIdSet: Set<string>;
@@ -41,6 +52,11 @@ interface TrackRowProps {
   playlistId: string;
   track: PlaylistTrackItem;
   index: number;
+  visibleSongColumnConfigs: Array<{
+    key: SongOptionalColumnKey;
+    config: SongOptionalColumnConfigItem;
+  }>;
+  rowGridTemplateColumns: string;
   selectedSongIds: string[];
   selectedSongIdSet: Set<string>;
   currentSongId: string | null;
@@ -65,10 +81,25 @@ function formatDuration(ms: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+function formatDateAdded(dateAdded: string | null) {
+  if (!dateAdded) {
+    return "—";
+  }
+
+  const parsed = new Date(dateAdded);
+  if (Number.isNaN(parsed.getTime())) {
+    return dateAdded;
+  }
+
+  return parsed.toLocaleDateString();
+}
+
 function TrackRow({
   playlistId,
   track,
   index,
+  visibleSongColumnConfigs,
+  rowGridTemplateColumns,
   selectedSongIds,
   selectedSongIdSet,
   currentSongId,
@@ -105,11 +136,12 @@ function TrackRow({
         {...(reorderEnabled ? sortable.attributes : {})}
         {...(reorderEnabled ? sortable.listeners : {})}
         className={cn(
-          "group/song grid w-full select-none grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
+          "group/song grid w-full select-none items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
           "hover:bg-cloud/8",
           selected && "bg-leaf/15",
           currentSongId === track.song.id && "border-l-2 border-l-blossom bg-blossom/20",
         )}
+        style={{ gridTemplateColumns: rowGridTemplateColumns }}
         onClick={(event) =>
           onSelectTrack(track.song.id, index, {
             shiftKey: event.shiftKey,
@@ -124,11 +156,8 @@ function TrackRow({
           {index + 1}
         </span>
         <div className="flex min-w-0 items-center gap-2">
-          <SongArtwork
-            artworkPath={track.song.artwork_path}
-            playLabel={`Play ${track.song.title}`}
-            onPlay={() => onPlayTrack(index)}
-          />
+          <SongPlayButton onPlay={() => onPlayTrack(index)} label={`Play ${track.song.title}`} />
+          <SongArtwork artworkPath={track.song.artwork_path} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate font-medium">{track.song.title}</span>
@@ -151,23 +180,74 @@ function TrackRow({
             ) : null}
           </div>
         </div>
-        <span className="truncate text-muted-on-dark">{track.song.artist}</span>
-        <span className="text-right text-muted-on-dark">
-          {formatDuration(track.song.duration_ms)}
-        </span>
+        {visibleSongColumnConfigs.map(({ key: columnKey, config }) => {
+          if (columnKey === "artist") {
+            return (
+              <span key={columnKey} className="truncate text-muted-on-dark">
+                {track.song.artist}
+              </span>
+            );
+          }
+          if (columnKey === "album") {
+            return (
+              <span key={columnKey} className="truncate text-muted-on-dark">
+                {track.song.album}
+              </span>
+            );
+          }
+          if (columnKey === "duration_ms") {
+            return (
+              <span key={columnKey} className="text-right text-muted-on-dark">
+                {formatDuration(track.song.duration_ms)}
+              </span>
+            );
+          }
+          if (columnKey === "play_count") {
+            return (
+              <span key={columnKey} className="text-right text-muted-on-dark">
+                {track.song.play_count}
+              </span>
+            );
+          }
+          if (columnKey === "comment") {
+            const comment = track.song.comment?.trim() ?? "";
+            return (
+              <span
+                key={columnKey}
+                className="truncate text-muted-on-dark"
+                title={comment || undefined}
+              >
+                {comment || "—"}
+              </span>
+            );
+          }
+          if (columnKey === "date_added") {
+            return (
+              <span
+                key={columnKey}
+                className={cn(
+                  "text-muted-on-dark",
+                  config.align === "right" ? "text-right" : "truncate",
+                )}
+              >
+                {formatDateAdded(track.song.date_added)}
+              </span>
+            );
+          }
+          return null;
+        })}
         <span className="flex justify-end">
-          <Button
+          <button
             type="button"
-            variant="ghost"
-            className="h-7 w-7"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-on-dark transition-colors hover:bg-cloud/10 hover:text-cloud"
             onClick={(event) => {
               event.stopPropagation();
               onAddToQueue(track.song.id);
             }}
             title="Add to queue"
           >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+            <ListPlus className="h-4 w-4" />
+          </button>
         </span>
       </button>
     </div>
@@ -178,6 +258,7 @@ export function PlaylistView({
   playlist,
   tracks,
   trackCount,
+  visibleSongColumns,
   currentSongId,
   selectedSongIds,
   selectedSongIdSet,
@@ -206,6 +287,25 @@ export function PlaylistView({
     overscan: 16,
   });
   const virtualItems = virtualizer.getVirtualItems();
+  const visibleSongColumnConfigs = useMemo(
+    () =>
+      visibleSongColumns.map((columnKey) => ({
+        key: columnKey,
+        config: SONG_OPTIONAL_COLUMN_CONFIG[columnKey],
+      })),
+    [visibleSongColumns],
+  );
+  const rowGridTemplateColumns = useMemo(
+    () =>
+      [
+        "32px",
+        "2fr",
+        ...visibleSongColumnConfigs.map((column) => column.config.width),
+        "46px",
+      ].join(" "),
+    [visibleSongColumnConfigs],
+  );
+  const rowLoadingColumnSpan = visibleSongColumns.length + 1;
 
   const firstVisibleIndex = virtualItems[0]?.index ?? 0;
   const lastVisibleIndex = virtualItems[virtualItems.length - 1]?.index ?? 0;
@@ -308,6 +408,8 @@ export function PlaylistView({
                   playlistId={playlist.id}
                   track={track}
                   index={virtualRow.index}
+                  visibleSongColumnConfigs={visibleSongColumnConfigs}
+                  rowGridTemplateColumns={rowGridTemplateColumns}
                   selectedSongIds={selectedSongIds}
                   selectedSongIdSet={selectedSongIdSet}
                   currentSongId={currentSongId}
@@ -318,11 +420,18 @@ export function PlaylistView({
                   onTrackContextMenu={onTrackContextMenu}
                 />
               ) : (
-                <div className="grid h-full w-full grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 px-3 text-sm text-muted-on-dark">
+                <div
+                  className="grid h-full w-full items-center gap-3 px-3 text-sm text-muted-on-dark"
+                  style={{ gridTemplateColumns: rowGridTemplateColumns }}
+                >
                   <span>{virtualRow.index + 1}</span>
-                  <span>Loading...</span>
-                  <span />
-                  <span />
+                  <span
+                    style={{
+                      gridColumn: `span ${rowLoadingColumnSpan} / span ${rowLoadingColumnSpan}`,
+                    }}
+                  >
+                    Loading...
+                  </span>
                   <span />
                 </div>
               )}
@@ -370,11 +479,17 @@ export function PlaylistView({
         </div>
       </header>
 
-      <div className="grid grid-cols-[32px_2fr_1.3fr_110px_46px] gap-3 bg-cloud/8 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+      <div
+        className="grid gap-3 bg-cloud/8 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark"
+        style={{ gridTemplateColumns: rowGridTemplateColumns }}
+      >
         <span>#</span>
         <span>Title</span>
-        <span>Artist</span>
-        <span className="text-right">Duration</span>
+        {visibleSongColumnConfigs.map(({ key: columnKey, config }) => (
+          <span key={columnKey} className={config.align === "right" ? "text-right" : "text-left"}>
+            {config.label}
+          </span>
+        ))}
         <span />
       </div>
 

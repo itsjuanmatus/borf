@@ -6,6 +6,14 @@ export type SongSortField =
   | "play_count"
   | "duration_ms";
 
+export type SongOptionalColumnKey =
+  | "artist"
+  | "album"
+  | "duration_ms"
+  | "play_count"
+  | "comment"
+  | "date_added";
+
 export type AlbumSortField = "name" | "artist" | "year" | "date_added";
 export type ArtistSortField = "name" | "play_count";
 export type SortOrder = "asc" | "desc";

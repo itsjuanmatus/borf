@@ -23,6 +23,7 @@ import {
   Folder,
   Library,
   ListMusic,
+  ListPlus,
   Settings2,
   UserRound,
   Waves,
@@ -30,6 +31,7 @@ import {
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { SongArtwork } from "./components/song-artwork";
+import { SongPlayButton } from "./components/song-play-button";
 import { Button } from "./components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 import { HistoryView } from "./features/history/HistoryView";
@@ -44,9 +46,18 @@ import { PlaylistSidebar } from "./features/playlists/PlaylistSidebar";
 import { PlaylistView } from "./features/playlists/PlaylistView";
 import { UpNextPanel } from "./features/queue/UpNextPanel";
 import { SearchPalette } from "./features/search/SearchPalette";
+import { SongColumnsSettingsPanel } from "./features/settings/SongColumnsSettingsPanel";
 import { StatsView } from "./features/stats/StatsView";
 import { TagsSettingsPanel } from "./features/tags/TagsSettingsPanel";
 import { audioApi, exportApi, libraryApi, mediaControlsApi, playlistApi, tagsApi } from "./lib/api";
+import {
+  DEFAULT_SONG_COLUMN_ORDER,
+  DEFAULT_VISIBLE_SONG_COLUMNS,
+  normalizeSongColumnOrder,
+  normalizeSongVisibleColumns,
+  SONG_OPTIONAL_COLUMN_CONFIG,
+  SONG_OPTIONAL_COLUMN_ORDER,
+} from "./lib/song-columns";
 import { cn } from "./lib/utils";
 import { usePlayerStore } from "./stores/player-store";
 import { usePlaylistStore } from "./stores/playlist-store";
@@ -73,6 +84,7 @@ import type {
   ScanProgressEvent,
   SearchPaletteItem,
   SongListItem,
+  SongOptionalColumnKey,
   SongSortField,
   SortOrder,
   Tag,
@@ -190,7 +202,7 @@ function navigationRoutesEqual(left: NavigationRoute, right: NavigationRoute) {
     case "artists-album-detail":
       return (
         left.artist ===
-          (right as Extract<NavigationRoute, { kind: "artists-album-detail" }>).artist &&
+        (right as Extract<NavigationRoute, { kind: "artists-album-detail" }>).artist &&
         isSameAlbumIdentity(
           left.album,
           (right as Extract<NavigationRoute, { kind: "artists-album-detail" }>).album,
@@ -225,6 +237,19 @@ function formatDuration(ms: number) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatDateAdded(dateAdded: string | null) {
+  if (!dateAdded) {
+    return "—";
+  }
+
+  const parsed = new Date(dateAdded);
+  if (Number.isNaN(parsed.getTime())) {
+    return dateAdded;
+  }
+
+  return parsed.toLocaleDateString();
 }
 
 function nextSort(currentField: SongSortField, currentOrder: SortOrder, field: SongSortField) {
@@ -404,6 +429,10 @@ function App() {
   const songSort = useSessionStore((state) => state.songSort);
   const songOrder = useSessionStore((state) => state.songOrder);
   const setSongSort = useSessionStore((state) => state.setSongSort);
+  const songColumnOrder = useSessionStore((state) => state.songColumnOrder);
+  const setSongColumnOrder = useSessionStore((state) => state.setSongColumnOrder);
+  const songVisibleColumns = useSessionStore((state) => state.songVisibleColumns);
+  const setSongVisibleColumns = useSessionStore((state) => state.setSongVisibleColumns);
 
   const albumSort = useSessionStore((state) => state.albumSort);
   const albumOrder = useSessionStore((state) => state.albumOrder);
@@ -524,6 +553,43 @@ function App() {
     debouncedSearchQuery,
     selectedTagFilterIds.length,
   ]);
+  const normalizedSongColumnOrder = useMemo(
+    () => normalizeSongColumnOrder(songColumnOrder),
+    [songColumnOrder],
+  );
+  const normalizedVisibleSongColumns = useMemo(
+    () => normalizeSongVisibleColumns(songVisibleColumns),
+    [songVisibleColumns],
+  );
+  const visibleSongColumnSet = useMemo(
+    () => new Set(normalizedVisibleSongColumns),
+    [normalizedVisibleSongColumns],
+  );
+  const visibleSongColumns = useMemo(
+    () => normalizedSongColumnOrder.filter((columnKey) => visibleSongColumnSet.has(columnKey)),
+    [normalizedSongColumnOrder, visibleSongColumnSet],
+  );
+  const visibleSongColumnConfigs = useMemo(
+    () =>
+      visibleSongColumns.map((columnKey) => ({
+        key: columnKey,
+        config: SONG_OPTIONAL_COLUMN_CONFIG[columnKey],
+      })),
+    [visibleSongColumns],
+  );
+  const songGridTemplateColumns = useMemo(
+    () =>
+      ["48px", "2fr", ...visibleSongColumnConfigs.map((column) => column.config.width)].join(" "),
+    [visibleSongColumnConfigs],
+  );
+  const songLoadingColumnSpan = visibleSongColumns.length + 1;
+  const compactSongGridTemplateColumnsWithAction = useMemo(
+    () =>
+      ["32px", "2fr", ...visibleSongColumnConfigs.map((column) => column.config.width), "46px"].join(
+        " ",
+      ),
+    [visibleSongColumnConfigs],
+  );
 
   const songVirtualizer = useVirtualizer({
     count: songCount,
@@ -1192,14 +1258,14 @@ function App() {
         })[0];
       const effectiveAlbum = resolvedAlbum ??
         fallbackAlbumByName ?? {
-          album: album.album,
-          album_artist: album.album_artist,
-          song_count: 0,
-          total_duration_ms: 0,
-          artwork_path: null,
-          year: null,
-          date_added: null,
-        };
+        album: album.album,
+        album_artist: album.album_artist,
+        song_count: 0,
+        total_duration_ms: 0,
+        artwork_path: null,
+        year: null,
+        date_added: null,
+      };
 
       setSelectedAlbum(effectiveAlbum);
       setLoadingAlbumTracks(true);
@@ -2608,6 +2674,76 @@ function App() {
     ],
   );
 
+  const applySongVisibleColumns = useCallback(
+    (nextColumns: SongOptionalColumnKey[]) => {
+      const normalized = normalizeSongVisibleColumns(nextColumns);
+      setSongVisibleColumns(normalized);
+
+      const sortedColumnKey = SONG_OPTIONAL_COLUMN_ORDER.find(
+        (columnKey) => SONG_OPTIONAL_COLUMN_CONFIG[columnKey].sortField === songSort,
+      );
+      if (!sortedColumnKey || normalized.includes(sortedColumnKey)) {
+        return;
+      }
+
+      setSongSort("title", "asc");
+      resetSongPages();
+      void refreshSongCount()
+        .then(() => ensureSongPage(0))
+        .catch((error: unknown) => setErrorMessage(String(error)));
+    },
+    [
+      ensureSongPage,
+      refreshSongCount,
+      resetSongPages,
+      setSongSort,
+      setSongVisibleColumns,
+      songSort,
+    ],
+  );
+
+  const applySongColumnOrder = useCallback(
+    (nextOrder: SongOptionalColumnKey[]) => {
+      setSongColumnOrder(normalizeSongColumnOrder(nextOrder));
+    },
+    [setSongColumnOrder],
+  );
+
+  const handleToggleSongColumn = useCallback(
+    (column: SongOptionalColumnKey) => {
+      if (visibleSongColumns.includes(column)) {
+        applySongVisibleColumns(visibleSongColumns.filter((value) => value !== column));
+        return;
+      }
+      applySongVisibleColumns([...visibleSongColumns, column]);
+    },
+    [applySongVisibleColumns, visibleSongColumns],
+  );
+
+  const handleMoveSongColumn = useCallback(
+    (column: SongOptionalColumnKey, direction: "up" | "down") => {
+      const currentIndex = normalizedSongColumnOrder.indexOf(column);
+      if (currentIndex < 0) {
+        return;
+      }
+
+      const nextIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+      if (nextIndex < 0 || nextIndex >= normalizedSongColumnOrder.length) {
+        return;
+      }
+
+      const nextOrder = [...normalizedSongColumnOrder];
+      [nextOrder[currentIndex], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[currentIndex]];
+      applySongColumnOrder(nextOrder);
+    },
+    [applySongColumnOrder, normalizedSongColumnOrder],
+  );
+
+  const handleResetSongColumns = useCallback(() => {
+    applySongColumnOrder(DEFAULT_SONG_COLUMN_ORDER);
+    applySongVisibleColumns(DEFAULT_VISIBLE_SONG_COLUMNS);
+  }, [applySongColumnOrder, applySongVisibleColumns]);
+
   const handleSongSortClick = useCallback(
     (field: SongSortField) => {
       const order = nextSort(songSort, songOrder, field);
@@ -3089,13 +3225,13 @@ function App() {
         playNext();
       }),
       listen("mediakey:toggle", () => {
-        void handleTogglePlayback().catch(() => {});
+        void handleTogglePlayback().catch(() => { });
       }),
       listen("mediakey:play", () => {
-        void handleMediaKeyPlay().catch(() => {});
+        void handleMediaKeyPlay().catch(() => { });
       }),
       listen("mediakey:pause", () => {
-        void handleMediaKeyPause().catch(() => {});
+        void handleMediaKeyPause().catch(() => { });
       }),
       listen("mediakey:next", () => {
         playNext();
@@ -3181,7 +3317,7 @@ function App() {
         durationMs: nowPlaying?.duration_ms,
         playing: playbackStateForMediaSync === "playing",
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [nowPlaying, playbackStateForMediaSync]);
 
   useEffect(() => {
@@ -3500,13 +3636,11 @@ function App() {
               >
                 <aside className="h-full overflow-y-auto bg-surface-dark p-4">
                   <div className="mb-6 flex items-center gap-2">
-                    <div className="rounded-full bg-leaf/80 p-2 text-cloud">
-                      <Waves className="h-4 w-4" />
-                    </div>
+                    <img src="app-icon.png" alt="Borf" className="h-12 w-12" />
                     <div>
                       <h1 className="text-lg font-semibold tracking-tight text-cloud">borf</h1>
                       <p className="text-xs text-muted-on-dark">
-                        Phase 4 metadata + tags + auto-sync
+                        your cozy music library
                       </p>
                     </div>
                   </div>
@@ -3753,7 +3887,10 @@ function App() {
                   <section className="min-h-0 flex-1 px-4 pb-4 pt-2">
                     {activeView === "songs" ? (
                       <div className="flex h-full min-h-0 flex-col rounded-2xl bg-cloud/5">
-                        <div className="grid grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] gap-3 rounded-t-2xl bg-cloud/8 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+                        <div
+                          className="grid gap-3 rounded-t-2xl bg-cloud/8 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark"
+                          style={{ gridTemplateColumns: songGridTemplateColumns }}
+                        >
                           <span>#</span>
                           <button
                             type="button"
@@ -3762,36 +3899,28 @@ function App() {
                           >
                             Title {songSort === "title" ? (songOrder === "asc" ? "↑" : "↓") : ""}
                           </button>
-                          <button
-                            type="button"
-                            className="text-left"
-                            onClick={() => handleSongSortClick("artist")}
-                          >
-                            Artist {songSort === "artist" ? (songOrder === "asc" ? "↑" : "↓") : ""}
-                          </button>
-                          <button
-                            type="button"
-                            className="text-left"
-                            onClick={() => handleSongSortClick("album")}
-                          >
-                            Album {songSort === "album" ? (songOrder === "asc" ? "↑" : "↓") : ""}
-                          </button>
-                          <button
-                            type="button"
-                            className="text-right"
-                            onClick={() => handleSongSortClick("duration_ms")}
-                          >
-                            Duration{" "}
-                            {songSort === "duration_ms" ? (songOrder === "asc" ? "↑" : "↓") : ""}
-                          </button>
-                          <button
-                            type="button"
-                            className="text-right"
-                            onClick={() => handleSongSortClick("play_count")}
-                          >
-                            Plays{" "}
-                            {songSort === "play_count" ? (songOrder === "asc" ? "↑" : "↓") : ""}
-                          </button>
+                          {visibleSongColumnConfigs.map(({ key: columnKey, config }) => {
+                            const alignmentClass = config.align === "right" ? "text-right" : "text-left";
+                            const sortField = config.sortField;
+                            if (!sortField) {
+                              return (
+                                <span key={columnKey} className={alignmentClass}>
+                                  {config.label}
+                                </span>
+                              );
+                            }
+                            return (
+                              <button
+                                key={columnKey}
+                                type="button"
+                                className={alignmentClass}
+                                onClick={() => handleSongSortClick(sortField)}
+                              >
+                                {config.label}{" "}
+                                {songSort === sortField ? (songOrder === "asc" ? "↑" : "↓") : ""}
+                              </button>
+                            );
+                          })}
                         </div>
 
                         <div
@@ -3896,11 +4025,12 @@ function App() {
                                       });
                                     }}
                                     className={cn(
-                                      "group/song grid h-full w-full select-none grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] items-center gap-3 px-3 text-left text-sm text-cloud transition-colors",
+                                      "group/song grid h-full w-full select-none items-center gap-3 px-3 text-left text-sm text-cloud transition-colors",
                                       "hover:bg-cloud/8",
                                       isSelected && "bg-leaf/15",
                                       isActive && "border-l-2 border-l-blossom bg-blossom/20",
                                     )}
+                                    style={{ gridTemplateColumns: songGridTemplateColumns }}
                                   >
                                     {song ? (
                                       <>
@@ -3908,15 +4038,15 @@ function App() {
                                           {virtualRow.index + 1}
                                         </span>
                                         <div className="flex min-w-0 items-center gap-2">
-                                          <SongArtwork
-                                            artworkPath={song.artwork_path}
-                                            playLabel={`Play ${song.title}`}
+                                          <SongPlayButton
                                             onPlay={() => {
                                               void playFromSongsIndex(virtualRow.index).catch(
                                                 (error: unknown) => setErrorMessage(String(error)),
                                               );
                                             }}
+                                            label={`Play ${song.title}`}
                                           />
+                                          <SongArtwork artworkPath={song.artwork_path} />
                                           <div className="min-w-0">
                                             <div className="flex items-center gap-1.5">
                                               <span className="truncate font-medium">
@@ -3941,25 +4071,74 @@ function App() {
                                             ) : null}
                                           </div>
                                         </div>
-                                        <span className="truncate text-muted-on-dark">
-                                          {song.artist}
-                                        </span>
-                                        <span className="truncate text-muted-on-dark">
-                                          {song.album}
-                                        </span>
-                                        <span className="text-right text-muted-on-dark">
-                                          {formatDuration(song.duration_ms)}
-                                        </span>
-                                        <span className="text-right text-muted-on-dark">
-                                          {song.play_count}
-                                        </span>
+                                        {visibleSongColumnConfigs.map(({ key: columnKey, config }) => {
+                                          if (columnKey === "artist") {
+                                            return (
+                                              <span key={columnKey} className="truncate text-muted-on-dark">
+                                                {song.artist}
+                                              </span>
+                                            );
+                                          }
+                                          if (columnKey === "album") {
+                                            return (
+                                              <span key={columnKey} className="truncate text-muted-on-dark">
+                                                {song.album}
+                                              </span>
+                                            );
+                                          }
+                                          if (columnKey === "duration_ms") {
+                                            return (
+                                              <span key={columnKey} className="text-right text-muted-on-dark">
+                                                {formatDuration(song.duration_ms)}
+                                              </span>
+                                            );
+                                          }
+                                          if (columnKey === "play_count") {
+                                            return (
+                                              <span key={columnKey} className="text-right text-muted-on-dark">
+                                                {song.play_count}
+                                              </span>
+                                            );
+                                          }
+                                          if (columnKey === "comment") {
+                                            const comment = song.comment?.trim() ?? "";
+                                            return (
+                                              <span
+                                                key={columnKey}
+                                                className="truncate text-muted-on-dark"
+                                                title={comment || undefined}
+                                              >
+                                                {comment || "—"}
+                                              </span>
+                                            );
+                                          }
+                                          if (columnKey === "date_added") {
+                                            return (
+                                              <span
+                                                key={columnKey}
+                                                className={cn(
+                                                  "text-muted-on-dark",
+                                                  config.align === "right" ? "text-right" : "truncate",
+                                                )}
+                                              >
+                                                {formatDateAdded(song.date_added)}
+                                              </span>
+                                            );
+                                          }
+                                          return null;
+                                        })}
                                       </>
                                     ) : (
                                       <>
                                         <span className="text-muted-on-dark">
                                           {virtualRow.index + 1}
                                         </span>
-                                        <span className="col-span-5 text-muted-on-dark">
+                                        <span
+                                          className="text-muted-on-dark"
+                                          style={{
+                                            gridColumn: `span ${songLoadingColumnSpan} / span ${songLoadingColumnSpan}`,
+                                          }}
+                                        >
                                           Loading...
                                         </span>
                                       </>
@@ -4044,6 +4223,7 @@ function App() {
                           playlist={activePlaylist}
                           tracks={activePlaylistTracksByIndex}
                           trackCount={activePlaylistTrackCount}
+                          visibleSongColumns={visibleSongColumns}
                           currentSongId={currentSong?.id ?? null}
                           selectedSongIds={selectedSongIds}
                           selectedSongIdSet={selectedSongIdSet}
@@ -4084,11 +4264,11 @@ function App() {
                           initialScrollTop={
                             activePlaylistId
                               ? (scrollPositionsRef.current[
-                                  navigationRouteKey({
-                                    kind: "playlist",
-                                    playlistId: activePlaylistId,
-                                  })
-                                ] ?? 0)
+                                navigationRouteKey({
+                                  kind: "playlist",
+                                  playlistId: activePlaylistId,
+                                })
+                              ] ?? 0)
                               : 0
                           }
                           restoreScrollTop={playlistRestoreScrollTop}
@@ -4139,6 +4319,23 @@ function App() {
                                 );
                               }}
                             >
+                              <div
+                                className="sticky top-0 z-10 grid gap-3 bg-surface-dark/90 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark backdrop-blur-sm"
+                                style={{ gridTemplateColumns: compactSongGridTemplateColumnsWithAction }}
+                              >
+                                <span>#</span>
+                                <span>Title</span>
+                                {visibleSongColumnConfigs.map(({ key: columnKey, config }) => (
+                                  <span
+                                    key={columnKey}
+                                    className={config.align === "right" ? "text-right" : "text-left"}
+                                  >
+                                    {config.label}
+                                  </span>
+                                ))}
+                                <span />
+                              </div>
+
                               {loadingAlbumTracks ? (
                                 <p className="p-4 text-sm text-muted-on-dark">
                                   Loading album tracks...
@@ -4153,10 +4350,12 @@ function App() {
                                     key={song.id}
                                     type="button"
                                     className={cn(
-                                      "group/song grid w-full select-none grid-cols-[48px_2fr_1.6fr_120px] gap-3 px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8",
+                                      "group/song grid w-full select-none items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
+                                      "hover:bg-cloud/8",
                                       currentSong?.id === song.id &&
-                                        "border-l-2 border-l-blossom bg-blossom/20",
+                                      "border-l-2 border-l-blossom bg-blossom/20",
                                     )}
+                                    style={{ gridTemplateColumns: compactSongGridTemplateColumnsWithAction }}
                                     onDoubleClick={() => {
                                       setQueueSourceSongs(albumTracks);
                                       setQueueSourceLabel(selectedAlbum?.album ?? "Album");
@@ -4164,12 +4363,20 @@ function App() {
                                         (error: unknown) => setErrorMessage(String(error)),
                                       );
                                     }}
+                                    onContextMenu={(event) => {
+                                      event.preventDefault();
+                                      setSongContextMenu({
+                                        x: event.clientX,
+                                        y: event.clientY,
+                                        songIds: [song.id],
+                                        index,
+                                        source: "library",
+                                      });
+                                    }}
                                   >
-                                    <span className="text-muted-on-dark">{index + 1}</span>
+                                    <span className="text-xs text-muted-on-dark">{index + 1}</span>
                                     <div className="flex min-w-0 items-center gap-2">
-                                      <SongArtwork
-                                        artworkPath={song.artwork_path}
-                                        playLabel={`Play ${song.title}`}
+                                      <SongPlayButton
                                         onPlay={() => {
                                           setQueueSourceSongs(albumTracks);
                                           setQueueSourceLabel(selectedAlbum?.album ?? "Album");
@@ -4177,14 +4384,99 @@ function App() {
                                             (error: unknown) => setErrorMessage(String(error)),
                                           );
                                         }}
+                                        label={`Play ${song.title}`}
                                       />
-                                      <span className="truncate font-medium">{song.title}</span>
+                                      <SongArtwork artworkPath={song.artwork_path} />
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="truncate font-medium">{song.title}</span>
+                                          {song.custom_start_ms > 0 ? (
+                                            <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-on-dark" />
+                                          ) : null}
+                                        </div>
+                                        {song.tags.length > 0 ? (
+                                          <div className="mt-1 flex flex-wrap gap-1">
+                                            {song.tags.slice(0, 3).map((tag) => (
+                                              <span
+                                                key={tag.id}
+                                                className="rounded-full border border-cloud/20 px-1.5 py-0.5 text-[10px] leading-none text-cloud"
+                                                style={{ backgroundColor: `${tag.color}40` }}
+                                              >
+                                                {tag.name}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
                                     </div>
-                                    <span className="truncate text-muted-on-dark">
-                                      {song.artist}
-                                    </span>
-                                    <span className="text-right text-muted-on-dark">
-                                      {formatDuration(song.duration_ms)}
+                                    {visibleSongColumnConfigs.map(({ key: columnKey, config }) => {
+                                      if (columnKey === "artist") {
+                                        return (
+                                          <span key={columnKey} className="truncate text-muted-on-dark">
+                                            {song.artist}
+                                          </span>
+                                        );
+                                      }
+                                      if (columnKey === "album") {
+                                        return (
+                                          <span key={columnKey} className="truncate text-muted-on-dark">
+                                            {song.album}
+                                          </span>
+                                        );
+                                      }
+                                      if (columnKey === "duration_ms") {
+                                        return (
+                                          <span key={columnKey} className="text-right text-muted-on-dark">
+                                            {formatDuration(song.duration_ms)}
+                                          </span>
+                                        );
+                                      }
+                                      if (columnKey === "play_count") {
+                                        return (
+                                          <span key={columnKey} className="text-right text-muted-on-dark">
+                                            {song.play_count}
+                                          </span>
+                                        );
+                                      }
+                                      if (columnKey === "comment") {
+                                        const comment = song.comment?.trim() ?? "";
+                                        return (
+                                          <span
+                                            key={columnKey}
+                                            className="truncate text-muted-on-dark"
+                                            title={comment || undefined}
+                                          >
+                                            {comment || "—"}
+                                          </span>
+                                        );
+                                      }
+                                      if (columnKey === "date_added") {
+                                        return (
+                                          <span
+                                            key={columnKey}
+                                            className={cn(
+                                              "text-muted-on-dark",
+                                              config.align === "right" ? "text-right" : "truncate",
+                                            )}
+                                          >
+                                            {formatDateAdded(song.date_added)}
+                                          </span>
+                                        );
+                                      }
+                                      return null;
+                                    })}
+                                    <span className="flex justify-end">
+                                      <button
+                                        type="button"
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-on-dark transition-colors hover:bg-cloud/10 hover:text-cloud"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          addSongsToQueue([song.id]);
+                                        }}
+                                        title="Add to queue"
+                                      >
+                                        <ListPlus className="h-4 w-4" />
+                                      </button>
                                     </span>
                                   </button>
                                 ))
@@ -4454,15 +4746,41 @@ function App() {
                                   );
                                 }}
                               >
-                                <div className="flex items-center px-3 py-2">
-                                  <div>
-                                    <p className="font-medium text-cloud">
+                                <div className="flex items-center gap-4 px-4 py-4">
+                                  <SongArtwork
+                                    artworkPath={selectedArtistAlbum.artwork_path}
+                                    sizeClassName="h-16 w-16"
+                                    className="shrink-0 rounded-xl"
+                                  />
+                                  <div className="min-w-0">
+                                    <p className="truncate text-lg font-semibold text-cloud">
                                       {selectedArtistAlbum.album}
                                     </p>
-                                    <p className="text-xs text-muted-on-dark">
+                                    <p className="truncate text-sm text-muted-on-dark">
                                       {selectedArtistAlbum.album_artist}
+                                      {selectedArtistAlbum.year ? ` • ${selectedArtistAlbum.year}` : ""}
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-muted-on-dark">
+                                      {selectedArtistAlbum.song_count} {selectedArtistAlbum.song_count === 1 ? "track" : "tracks"} • {formatDuration(selectedArtistAlbum.total_duration_ms)}
                                     </p>
                                   </div>
+                                </div>
+
+                                <div
+                                  className="sticky top-0 z-10 grid gap-3 bg-surface-dark/90 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark backdrop-blur-sm"
+                                  style={{ gridTemplateColumns: compactSongGridTemplateColumnsWithAction }}
+                                >
+                                  <span>#</span>
+                                  <span>Title</span>
+                                  {visibleSongColumnConfigs.map(({ key: columnKey, config }) => (
+                                    <span
+                                      key={columnKey}
+                                      className={config.align === "right" ? "text-right" : "text-left"}
+                                    >
+                                      {config.label}
+                                    </span>
+                                  ))}
+                                  <span />
                                 </div>
 
                                 {loadingArtistAlbumTracks ? (
@@ -4475,10 +4793,14 @@ function App() {
                                       key={song.id}
                                       type="button"
                                       className={cn(
-                                        "group/song grid w-full select-none grid-cols-[48px_2fr_120px] gap-3 px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8",
+                                        "group/song grid w-full select-none items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
+                                        "hover:bg-cloud/8",
                                         currentSong?.id === song.id &&
-                                          "border-l-2 border-l-blossom bg-blossom/20",
+                                        "border-l-2 border-l-blossom bg-blossom/20",
                                       )}
+                                      style={{
+                                        gridTemplateColumns: compactSongGridTemplateColumnsWithAction,
+                                      }}
                                       onDoubleClick={() => {
                                         setQueueSourceSongs(artistAlbumTracks);
                                         setQueueSourceLabel(selectedArtistAlbum?.album ?? "Artist");
@@ -4486,12 +4808,20 @@ function App() {
                                           (error: unknown) => setErrorMessage(String(error)),
                                         );
                                       }}
+                                      onContextMenu={(event) => {
+                                        event.preventDefault();
+                                        setSongContextMenu({
+                                          x: event.clientX,
+                                          y: event.clientY,
+                                          songIds: [song.id],
+                                          index,
+                                          source: "library",
+                                        });
+                                      }}
                                     >
-                                      <span className="text-muted-on-dark">{index + 1}</span>
+                                      <span className="text-xs text-muted-on-dark">{index + 1}</span>
                                       <div className="flex min-w-0 items-center gap-2">
-                                        <SongArtwork
-                                          artworkPath={song.artwork_path}
-                                          playLabel={`Play ${song.title}`}
+                                        <SongPlayButton
                                           onPlay={() => {
                                             setQueueSourceSongs(artistAlbumTracks);
                                             setQueueSourceLabel(
@@ -4504,11 +4834,99 @@ function App() {
                                               setErrorMessage(String(error)),
                                             );
                                           }}
+                                          label={`Play ${song.title}`}
                                         />
-                                        <span className="truncate font-medium">{song.title}</span>
+                                        <SongArtwork artworkPath={song.artwork_path} />
+                                        <div className="min-w-0">
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="truncate font-medium">{song.title}</span>
+                                            {song.custom_start_ms > 0 ? (
+                                              <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-on-dark" />
+                                            ) : null}
+                                          </div>
+                                          {song.tags.length > 0 ? (
+                                            <div className="mt-1 flex flex-wrap gap-1">
+                                              {song.tags.slice(0, 3).map((tag) => (
+                                                <span
+                                                  key={tag.id}
+                                                  className="rounded-full border border-cloud/20 px-1.5 py-0.5 text-[10px] leading-none text-cloud"
+                                                  style={{ backgroundColor: `${tag.color}40` }}
+                                                >
+                                                  {tag.name}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          ) : null}
+                                        </div>
                                       </div>
-                                      <span className="text-right text-muted-on-dark">
-                                        {formatDuration(song.duration_ms)}
+                                      {visibleSongColumnConfigs.map(({ key: columnKey, config }) => {
+                                        if (columnKey === "artist") {
+                                          return (
+                                            <span key={columnKey} className="truncate text-muted-on-dark">
+                                              {song.artist}
+                                            </span>
+                                          );
+                                        }
+                                        if (columnKey === "album") {
+                                          return (
+                                            <span key={columnKey} className="truncate text-muted-on-dark">
+                                              {song.album}
+                                            </span>
+                                          );
+                                        }
+                                        if (columnKey === "duration_ms") {
+                                          return (
+                                            <span key={columnKey} className="text-right text-muted-on-dark">
+                                              {formatDuration(song.duration_ms)}
+                                            </span>
+                                          );
+                                        }
+                                        if (columnKey === "play_count") {
+                                          return (
+                                            <span key={columnKey} className="text-right text-muted-on-dark">
+                                              {song.play_count}
+                                            </span>
+                                          );
+                                        }
+                                        if (columnKey === "comment") {
+                                          const comment = song.comment?.trim() ?? "";
+                                          return (
+                                            <span
+                                              key={columnKey}
+                                              className="truncate text-muted-on-dark"
+                                              title={comment || undefined}
+                                            >
+                                              {comment || "—"}
+                                            </span>
+                                          );
+                                        }
+                                        if (columnKey === "date_added") {
+                                          return (
+                                            <span
+                                              key={columnKey}
+                                              className={cn(
+                                                "text-muted-on-dark",
+                                                config.align === "right" ? "text-right" : "truncate",
+                                              )}
+                                            >
+                                              {formatDateAdded(song.date_added)}
+                                            </span>
+                                          );
+                                        }
+                                        return null;
+                                      })}
+                                      <span className="flex justify-end">
+                                        <button
+                                          type="button"
+                                          className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-on-dark transition-colors hover:bg-cloud/10 hover:text-cloud"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            addSongsToQueue([song.id]);
+                                          }}
+                                          title="Add to queue"
+                                        >
+                                          <ListPlus className="h-4 w-4" />
+                                        </button>
                                       </span>
                                     </button>
                                   ))
@@ -4582,13 +5000,23 @@ function App() {
                             )
                           }
                         >
-                          <TagsSettingsPanel
-                            tags={tags}
-                            onCreateTag={handleCreateTag}
-                            onRenameTag={handleRenameTag}
-                            onSetTagColor={handleSetTagColor}
-                            onDeleteTag={handleDeleteTag}
+                          <SongColumnsSettingsPanel
+                            columnOrder={normalizedSongColumnOrder}
+                            visibleColumns={visibleSongColumns}
+                            onToggleColumn={handleToggleSongColumn}
+                            onMoveColumn={handleMoveSongColumn}
+                            onResetDefaults={handleResetSongColumns}
                           />
+
+                          <div className="mt-8">
+                            <TagsSettingsPanel
+                              tags={tags}
+                              onCreateTag={handleCreateTag}
+                              onRenameTag={handleRenameTag}
+                              onSetTagColor={handleSetTagColor}
+                              onDeleteTag={handleDeleteTag}
+                            />
+                          </div>
 
                           <div className="mt-8">
                             <h3 className="mb-3 text-sm font-semibold text-cloud">Export</h3>

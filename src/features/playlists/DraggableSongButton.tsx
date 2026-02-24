@@ -6,6 +6,7 @@ interface DraggableSongButtonProps {
   draggableId: string;
   payload: DragSongPayload;
   className: string;
+  style?: React.CSSProperties;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
   onDoubleClick?: React.MouseEventHandler<HTMLButtonElement>;
   onContextMenu?: React.MouseEventHandler<HTMLButtonElement>;
@@ -16,6 +17,7 @@ export function DraggableSongButton({
   draggableId,
   payload,
   className,
+  style,
   onClick,
   onDoubleClick,
   onContextMenu,
@@ -29,6 +31,7 @@ export function DraggableSongButton({
       type="button"
       className={className}
       style={{
+        ...style,
         transform: CSS.Translate.toString(draggable.transform),
         opacity: draggable.isDragging ? 0.65 : 1,
       }}

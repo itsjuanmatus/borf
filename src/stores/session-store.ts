@@ -1,11 +1,18 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  DEFAULT_SONG_COLUMN_ORDER,
+  DEFAULT_VISIBLE_SONG_COLUMNS,
+  normalizeSongColumnOrder,
+  normalizeSongVisibleColumns,
+} from "../lib/song-columns";
 import type {
   AlbumSortField,
   ArtistSortField,
   LibraryView,
   QueueState,
   RepeatMode,
+  SongOptionalColumnKey,
   SongSortField,
   SortOrder,
 } from "../types";
@@ -21,6 +28,8 @@ interface SessionState {
   shuffleEnabled: boolean;
   songSort: SongSortField;
   songOrder: SortOrder;
+  songColumnOrder: SongOptionalColumnKey[];
+  songVisibleColumns: SongOptionalColumnKey[];
   albumSort: AlbumSortField;
   albumOrder: SortOrder;
   artistSort: ArtistSortField;
@@ -35,6 +44,8 @@ interface SessionState {
   setRepeatMode: (mode: RepeatMode) => void;
   setShuffleEnabled: (enabled: boolean) => void;
   setSongSort: (sort: SongSortField, order: SortOrder) => void;
+  setSongColumnOrder: (columns: SongOptionalColumnKey[]) => void;
+  setSongVisibleColumns: (columns: SongOptionalColumnKey[]) => void;
   setAlbumSort: (sort: AlbumSortField, order: SortOrder) => void;
   setArtistSort: (sort: ArtistSortField, order: SortOrder) => void;
 }
@@ -52,6 +63,8 @@ export const useSessionStore = create<SessionState>()(
       shuffleEnabled: false,
       songSort: "title",
       songOrder: "asc",
+      songColumnOrder: [...DEFAULT_SONG_COLUMN_ORDER],
+      songVisibleColumns: [...DEFAULT_VISIBLE_SONG_COLUMNS],
       albumSort: "name",
       albumOrder: "asc",
       artistSort: "name",
@@ -71,6 +84,14 @@ export const useSessionStore = create<SessionState>()(
       setRepeatMode: (repeatMode) => set({ repeatMode }),
       setShuffleEnabled: (shuffleEnabled) => set({ shuffleEnabled }),
       setSongSort: (songSort, songOrder) => set({ songSort, songOrder }),
+      setSongColumnOrder: (songColumnOrder) =>
+        set({
+          songColumnOrder: normalizeSongColumnOrder(songColumnOrder),
+        }),
+      setSongVisibleColumns: (songVisibleColumns) =>
+        set({
+          songVisibleColumns: normalizeSongVisibleColumns(songVisibleColumns),
+        }),
       setAlbumSort: (albumSort, albumOrder) => set({ albumSort, albumOrder }),
       setArtistSort: (artistSort, artistOrder) => set({ artistSort, artistOrder }),
     }),
@@ -88,6 +109,8 @@ export const useSessionStore = create<SessionState>()(
         shuffleEnabled: state.shuffleEnabled,
         songSort: state.songSort,
         songOrder: state.songOrder,
+        songColumnOrder: state.songColumnOrder,
+        songVisibleColumns: state.songVisibleColumns,
         albumSort: state.albumSort,
         albumOrder: state.albumOrder,
         artistSort: state.artistSort,
