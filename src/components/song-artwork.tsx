@@ -46,13 +46,13 @@ export function SongArtwork({
   return (
     <div
       className={cn(
-        "group/artwork relative shrink-0 overflow-hidden rounded-md border border-border/70 bg-surface",
+        "group/artwork relative shrink-0 overflow-hidden rounded-lg bg-surface shadow-sm",
         sizeClassName,
         className,
       )}
     >
-      <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-sky/35 to-blossom/30">
-        <Disc3 className="h-4 w-4 text-night/70" />
+      <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-sand to-blossom/20">
+        <Disc3 className="h-4 w-4 text-nook" />
       </div>
       {showImage ? (
         <img

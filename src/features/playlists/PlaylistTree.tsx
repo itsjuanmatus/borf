@@ -57,10 +57,10 @@ function TreeNode({
         {...sortable.attributes}
         {...sortable.listeners}
         className={cn(
-          "mb-1 flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm",
-          "hover:bg-sky/15",
-          sortable.isOver && "bg-sky/20 ring-1 ring-sky",
-          activePlaylistId === node.id && "bg-sky/25 font-medium",
+          "mb-1 flex h-8 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted-on-dark",
+          "hover:bg-cloud/8",
+          sortable.isOver && "bg-leaf/15 ring-1 ring-leaf/50",
+          activePlaylistId === node.id && "bg-leaf/20 text-cloud font-medium",
         )}
         data-playlist-id={node.id}
         style={{ paddingLeft: `${8 + depth * 14}px` }}
@@ -78,21 +78,21 @@ function TreeNode({
       >
         {node.is_folder ? (
           isExpanded ? (
-            <ChevronDown className="h-3.5 w-3.5 text-muted" />
+            <ChevronDown className="h-3.5 w-3.5 text-muted-on-dark" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted" />
+            <ChevronRight className="h-3.5 w-3.5 text-muted-on-dark" />
           )
         ) : (
           <span className="h-3.5 w-3.5" />
         )}
         {node.is_folder ? (
           isExpanded ? (
-            <FolderOpen className="h-4 w-4 shrink-0 text-muted" />
+            <FolderOpen className="h-4 w-4 shrink-0 text-muted-on-dark" />
           ) : (
-            <Folder className="h-4 w-4 shrink-0 text-muted" />
+            <Folder className="h-4 w-4 shrink-0 text-muted-on-dark" />
           )
         ) : (
-          <ListMusic className="h-4 w-4 shrink-0 text-muted" />
+          <ListMusic className="h-4 w-4 shrink-0 text-muted-on-dark" />
         )}
         <span className="truncate">{node.name}</span>
       </button>
@@ -255,8 +255,8 @@ export function PlaylistTree({
         treeRootRef.current = node;
       }}
       className={cn(
-        "min-h-16 rounded-lg border border-border/60 p-1",
-        rootDroppable.isOver && "bg-sky/15 ring-1 ring-sky",
+        "min-h-16 rounded-lg p-1",
+        rootDroppable.isOver && "bg-leaf/15 ring-1 ring-leaf/50",
       )}
     >
       <SortableContext
@@ -264,7 +264,7 @@ export function PlaylistTree({
         strategy={verticalListSortingStrategy}
       >
         {rootNodes.length === 0 ? (
-          <p className="p-2 text-xs text-muted">No playlists yet.</p>
+          <p className="p-2 text-xs text-muted-on-dark">No playlists yet.</p>
         ) : (
           rootNodes.map((node) => (
             <TreeNode

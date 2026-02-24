@@ -123,7 +123,7 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
 
   if (!loading && entries.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-on-dark">
         <Clock3 className="h-12 w-12 opacity-40" />
         <p className="text-lg font-medium">No listening history yet</p>
         <p className="text-sm">Play some songs to see them here.</p>
@@ -148,7 +148,7 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
             return (
               <div
                 key={`header-${row.label}`}
-                className="sticky top-0 z-10 flex items-center bg-white/90 px-4 py-2 backdrop-blur-sm"
+                className="sticky top-0 z-10 flex items-center bg-surface-dark/90 px-4 py-2 backdrop-blur-sm"
                 style={{
                   position: "absolute",
                   top: 0,
@@ -158,7 +158,7 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <span className="text-sm font-semibold text-muted">{row.label}</span>
+                <span className="text-sm font-semibold text-muted-on-dark">{row.label}</span>
               </div>
             );
           }
@@ -168,7 +168,7 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
             <button
               type="button"
               key={entry.id}
-              className="group/song flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-sky/10"
+              className="group/song flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-cloud/8"
               style={{
                 position: "absolute",
                 top: 0,
@@ -181,10 +181,10 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
             >
               <SongArtwork artworkPath={entry.artwork_path} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{entry.title}</p>
-                <p className="truncate text-xs text-muted">{entry.artist}</p>
+                <p className="truncate text-sm font-medium text-cloud">{entry.title}</p>
+                <p className="truncate text-xs text-muted-on-dark">{entry.artist}</p>
               </div>
-              <div className="flex shrink-0 items-center gap-3 text-xs text-muted">
+              <div className="flex shrink-0 items-center gap-3 text-xs text-muted-on-dark">
                 <span>{formatTimePlayed(entry.duration_played_ms)}</span>
                 <span>{formatTime(entry.started_at)}</span>
               </div>
@@ -192,7 +192,7 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
           );
         })}
       </div>
-      {loading ? <div className="py-4 text-center text-sm text-muted">Loading...</div> : null}
+      {loading ? <div className="py-4 text-center text-sm text-muted-on-dark">Loading...</div> : null}
     </div>
   );
 }

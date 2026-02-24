@@ -62,8 +62,8 @@ export function SetCustomStartDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/40 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/50 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-3xl bg-cloud p-8 shadow-2xl">
         <h3 className="text-lg font-semibold">Set Custom Start Time</h3>
         <p className="mt-1 text-sm text-muted">
           This will update {targetSongCount} selected song{targetSongCount === 1 ? "" : "s"}.
@@ -74,7 +74,7 @@ export function SetCustomStartDialog({
           <input
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            className="mt-1 w-full rounded-lg border border-border p-3 text-sm outline-none focus:border-sky"
+            className="mt-1 w-full rounded-2xl bg-sand/50 p-3 text-sm outline-none focus:ring-1 focus:ring-leaf/40"
           />
         </label>
 

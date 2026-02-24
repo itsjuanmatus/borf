@@ -7,7 +7,6 @@ import { cn } from "../../lib/utils";
 import type { DragSongPayload, SongListItem } from "../../types";
 
 interface UpNextPanelProps {
-  isOpen: boolean;
   nowPlaying: SongListItem | null;
   upNext: SongListItem[];
   playingFrom: SongListItem[];
@@ -37,23 +36,23 @@ function UpNextRow({ song, index, onRemove }: UpNextRowProps) {
         transform: CSS.Transform.toString(sortable.transform),
         transition: sortable.transition,
       }}
-      className="rounded-md border border-border/70 bg-surface/70"
+      className="rounded-md bg-cloud/8"
     >
       <div
         className="flex items-center gap-2 px-3 py-2"
         {...sortable.attributes}
         {...sortable.listeners}
       >
-        <p className="w-6 text-xs text-muted">{index + 1}</p>
+        <p className="w-6 text-xs text-muted-on-dark">{index + 1}</p>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{song.title}</p>
-          <p className="truncate text-xs text-muted">{song.artist}</p>
+          <p className="truncate text-sm font-medium text-cloud">{song.title}</p>
+          <p className="truncate text-xs text-muted-on-dark">{song.artist}</p>
         </div>
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="h-7 w-7"
+          className="h-7 w-7 text-muted-on-dark hover:bg-cloud/8 hover:text-cloud"
           onClick={() => onRemove(song.id)}
         >
           <X className="h-3.5 w-3.5" />
@@ -64,7 +63,6 @@ function UpNextRow({ song, index, onRemove }: UpNextRowProps) {
 }
 
 export function UpNextPanel({
-  isOpen,
   nowPlaying,
   upNext,
   playingFrom,
@@ -75,82 +73,74 @@ export function UpNextPanel({
   const queueDrop = useDroppable({ id: "queue-dropzone" });
 
   return (
-    <aside
-      className={cn(
-        "fixed right-0 top-0 z-50 h-full w-[340px] border-l border-border bg-white shadow-xl transition-transform duration-200",
-        isOpen ? "translate-x-0" : "translate-x-full",
-      )}
-      aria-hidden={!isOpen}
-    >
-      <div className="flex h-full flex-col">
-        <header className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div>
-            <h3 className="text-sm font-semibold">Up Next</h3>
-            <p className="text-xs text-muted">Manual queue first</p>
-          </div>
-          <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </header>
+    <div className="flex h-full flex-col bg-surface-dark">
+      <header className="flex items-center justify-between border-b border-border-dark px-4 py-3">
+        <div>
+          <h3 className="text-sm font-semibold text-cloud">Up Next</h3>
+          <p className="text-xs text-muted-on-dark">Manual queue first</p>
+        </div>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-muted-on-dark hover:text-cloud" onClick={onClose}>
+          <X className="h-4 w-4" />
+        </Button>
+      </header>
 
-        <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
-          <section className="mb-5">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-              Now Playing
-            </p>
-            {nowPlaying ? (
-              <div className="rounded-lg border border-border bg-surface/70 p-3">
-                <p className="truncate text-sm font-medium">{nowPlaying.title}</p>
-                <p className="truncate text-xs text-muted">{nowPlaying.artist}</p>
-              </div>
-            ) : (
-              <p className="text-xs text-muted">Nothing is currently playing.</p>
-            )}
-          </section>
-
-          <section className="mb-5">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Up Next</p>
-            <div
-              ref={queueDrop.setNodeRef}
-              className={cn(
-                "space-y-2 rounded-lg border border-border/70 p-2",
-                queueDrop.isOver && "bg-sky/15 ring-1 ring-sky",
-              )}
-            >
-              <SortableContext
-                items={upNext.map((song) => `queue-song:${song.id}`)}
-                strategy={verticalListSortingStrategy}
-              >
-                {upNext.length === 0 ? (
-                  <p className="p-2 text-xs text-muted">Drag songs here to queue manually.</p>
-                ) : (
-                  upNext.map((song, index) => (
-                    <UpNextRow key={song.id} song={song} index={index} onRemove={onRemoveUpNext} />
-                  ))
-                )}
-              </SortableContext>
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+        <section className="mb-5">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+            Now Playing
+          </p>
+          {nowPlaying ? (
+            <div className="rounded-lg bg-cloud/8 p-3">
+              <p className="truncate text-sm font-medium text-cloud">{nowPlaying.title}</p>
+              <p className="truncate text-xs text-muted-on-dark">{nowPlaying.artist}</p>
             </div>
-          </section>
+          ) : (
+            <p className="text-xs text-muted-on-dark">Nothing is currently playing.</p>
+          )}
+        </section>
 
-          <section>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-              {playingFromLabel ? `Playing From ${playingFromLabel}` : "Playing From Source"}
-            </p>
-            <div className="space-y-1 rounded-lg border border-border/70 bg-surface/50 p-2">
-              {playingFrom.length === 0 ? (
-                <p className="p-2 text-xs text-muted">No remaining source songs.</p>
+        <section className="mb-5">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">Up Next</p>
+          <div
+            ref={queueDrop.setNodeRef}
+            className={cn(
+              "space-y-2 rounded-lg p-2",
+              queueDrop.isOver && "bg-leaf/15 ring-1 ring-leaf/50",
+            )}
+          >
+            <SortableContext
+              items={upNext.map((song) => `queue-song:${song.id}`)}
+              strategy={verticalListSortingStrategy}
+            >
+              {upNext.length === 0 ? (
+                <p className="p-2 text-xs text-muted-on-dark">Drag songs here to queue manually.</p>
               ) : (
-                playingFrom.map((song) => (
-                  <div key={song.id} className="rounded-md px-2 py-1.5 text-sm">
-                    <p className="truncate font-medium">{song.title}</p>
-                    <p className="truncate text-xs text-muted">{song.artist}</p>
-                  </div>
+                upNext.map((song, index) => (
+                  <UpNextRow key={song.id} song={song} index={index} onRemove={onRemoveUpNext} />
                 ))
               )}
-            </div>
-          </section>
-        </div>
+            </SortableContext>
+          </div>
+        </section>
+
+        <section>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+            {playingFromLabel ? `Playing From ${playingFromLabel}` : "Playing From Source"}
+          </p>
+          <div className="space-y-1 rounded-lg bg-cloud/5 p-2">
+            {playingFrom.length === 0 ? (
+              <p className="p-2 text-xs text-muted-on-dark">No remaining source songs.</p>
+            ) : (
+              playingFrom.map((song) => (
+                <div key={song.id} className="rounded-md px-2 py-1.5 text-sm">
+                  <p className="truncate font-medium text-cloud">{song.title}</p>
+                  <p className="truncate text-xs text-muted-on-dark">{song.artist}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
       </div>
-    </aside>
+    </div>
   );
 }

@@ -313,7 +313,7 @@ function App() {
   const clipboardSongIds = usePlaylistStore((state) => state.clipboardSongIds);
   const copySelectionToClipboard = usePlaylistStore((state) => state.copySelectionToClipboard);
   const setClipboardSongIds = usePlaylistStore((state) => state.setClipboardSongIds);
-  const clearClipboard = usePlaylistStore((state) => state.clearClipboard);
+
 
   const upNext = useQueueStore((state) => state.upNext);
   const playingFromSource = useQueueStore((state) => state.playingFromSource);
@@ -2574,6 +2574,38 @@ function App() {
         }}
       >
         <div className="flex h-full min-h-0 flex-col text-text">
+          <TransportBar
+            currentSong={currentSong}
+            queueLength={queue.length}
+            songCount={songCount}
+            upNextCount={upNext.length}
+            shuffleEnabled={shuffleEnabled}
+            repeatMode={repeatMode}
+            volume={persistedVolume}
+            onPrevious={playPrevious}
+            onTogglePlayback={() => {
+              void handleTogglePlayback().catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+            onNext={playNext}
+            onToggleShuffle={handleToggleShuffle}
+            onCycleRepeat={() => setRepeatMode(cycleRepeatMode(repeatMode))}
+            onSeek={(nextPosition, nextDurationMs) => {
+              setPosition(nextPosition, nextDurationMs);
+              void audioApi
+                .seek(nextPosition)
+                .catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+            onToggleUpNext={() => {
+              if (upNextOpen) closeUpNext();
+              else openUpNext();
+            }}
+            onVolumeChange={(nextVolume) => {
+              setPersistedVolume(nextVolume);
+              void audioApi
+                .setVolume(nextVolume)
+                .catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+          />
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <Group orientation="horizontal" className="h-full w-full">
               <Panel
@@ -2582,28 +2614,29 @@ function App() {
                 minSize="16%"
                 maxSize="35%"
                 onResize={(size) => setSidebarSize(Math.round(size.asPercentage))}
+                className="bg-surface-dark"
               >
-                <aside className="h-full overflow-y-auto border-r border-border/80 bg-surface/85 p-4 backdrop-blur-sm">
+                <aside className="h-full overflow-y-auto bg-surface-dark p-4">
                   <div className="mb-6 flex items-center gap-2">
-                    <div className="rounded-full bg-sky p-2 text-night">
+                    <div className="rounded-full bg-leaf/80 p-2 text-cloud">
                       <Waves className="h-4 w-4" />
                     </div>
                     <div>
-                      <h1 className="text-lg font-semibold tracking-tight">borf</h1>
-                      <p className="text-xs text-muted">Phase 4 metadata + tags + auto-sync</p>
+                      <h1 className="text-lg font-semibold tracking-tight text-cloud">borf</h1>
+                      <p className="text-xs text-muted-on-dark">Phase 4 metadata + tags + auto-sync</p>
                     </div>
                   </div>
 
-                  <div className="mt-6 space-y-2 rounded-xl border border-border bg-white/80 p-3 text-sm">
-                    <p className="font-medium">Library</p>
+                  <div className="mt-6 space-y-1 text-sm">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">Library</p>
 
                     <button
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
                         activeView === "songs"
-                          ? "bg-sky/30 text-text"
-                          : "text-muted hover:bg-sky/10",
+                          ? "bg-leaf/25 text-cloud"
+                          : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
                         perfViewSwitchRef.current = { view: "songs", startedAt: performance.now() };
@@ -2622,10 +2655,10 @@ function App() {
                     <button
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
                         activeView === "albums"
-                          ? "bg-sky/30 text-text"
-                          : "text-muted hover:bg-sky/10",
+                          ? "bg-leaf/25 text-cloud"
+                          : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
                         perfViewSwitchRef.current = {
@@ -2646,10 +2679,10 @@ function App() {
                     <button
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
                         activeView === "artists"
-                          ? "bg-sky/30 text-text"
-                          : "text-muted hover:bg-sky/10",
+                          ? "bg-leaf/25 text-cloud"
+                          : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
                         perfViewSwitchRef.current = {
@@ -2670,10 +2703,10 @@ function App() {
                     <button
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
                         activeView === "settings"
-                          ? "bg-sky/30 text-text"
-                          : "text-muted hover:bg-sky/10",
+                          ? "bg-leaf/25 text-cloud"
+                          : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
                         perfViewSwitchRef.current = {
@@ -2695,10 +2728,10 @@ function App() {
                     <button
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
                         activeView === "history"
-                          ? "bg-sky/30 text-text"
-                          : "text-muted hover:bg-sky/10",
+                          ? "bg-leaf/25 text-cloud"
+                          : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
                         setPlaylistReorderMode(false);
@@ -2716,10 +2749,10 @@ function App() {
                     <button
                       type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors",
                         activeView === "stats"
-                          ? "bg-sky/30 text-text"
-                          : "text-muted hover:bg-sky/10",
+                          ? "bg-leaf/25 text-cloud"
+                          : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
                         setPlaylistReorderMode(false);
@@ -2761,15 +2794,15 @@ function App() {
                     }}
                   />
 
-                  <div className="mt-4 rounded-xl border border-border bg-white/80 p-3 text-xs text-muted">
-                    <p className="font-medium text-text">Status</p>
+                  <div className="mt-4 rounded-xl bg-cloud/5 p-3 text-xs text-muted-on-dark">
+                    <p className="font-medium text-cloud">Status</p>
                     {isScanning ? (
                       <p className="mt-1 text-accent">Scanning in progress...</p>
                     ) : null}
                     <p className="mt-1 break-words">{statusMessage}</p>
                     {scanProgress ? (
                       <div className="mt-2 space-y-1">
-                        <div className="h-2 w-full overflow-hidden rounded-full bg-sky/30">
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-cloud/15">
                           <div
                             className="h-full rounded-full bg-accent transition-[width] duration-200"
                             style={{ width: `${progressPercent}%` }}
@@ -2789,14 +2822,14 @@ function App() {
                 </aside>
               </Panel>
 
-              <Separator className="w-1 bg-transparent transition-colors hover:bg-sky/60" />
+              <Separator className="w-1 bg-transparent transition-colors hover:bg-leaf/40" />
 
-              <Panel id="main" minSize="40%">
-                <main className="flex h-full min-h-0 flex-col bg-white/70 backdrop-blur-sm">
-                  <header className="relative border-b border-border px-6 py-4">
+              <Panel id="main" minSize="30%" className="bg-surface-dark">
+                <main className="flex h-full min-h-0 flex-col bg-surface-dark">
+                  <header className="relative px-6 py-4">
                     <div className="flex items-center justify-between gap-4">
                       <div>
-                        <h2 className="text-xl font-semibold tracking-tight">
+                        <h2 className="text-base font-semibold tracking-tight text-cloud">
                           {activeView === "songs"
                             ? "Songs"
                             : activeView === "albums"
@@ -2811,7 +2844,7 @@ function App() {
                                       ? "Settings"
                                       : (activePlaylist?.name ?? "Playlist")}
                         </h2>
-                        <p className="text-sm text-muted">
+                        <p className="text-sm text-muted-on-dark">
                           {activeView === "songs"
                             ? `${songCount.toLocaleString()} songs`
                             : activeView === "albums"
@@ -2833,7 +2866,7 @@ function App() {
                       <div className="relative w-full max-w-xl" ref={tagFilterMenuRootRef}>
                         <div className="flex gap-2">
                           <div className="relative min-w-0 flex-1">
-                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-on-dark" />
                             <Input
                               ref={searchInputRef}
                               value={searchQuery}
@@ -2860,7 +2893,7 @@ function App() {
                           </Button>
                         </div>
                         {showTagFilterMenu ? (
-                          <div className="absolute right-0 top-[110%] z-40 w-64 rounded-xl border border-border bg-white p-3 shadow-lg">
+                          <div className="absolute right-0 top-[110%] z-40 w-64 rounded-2xl bg-cloud p-3 shadow-xl">
                             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
                               Filter Songs By Tags
                             </p>
@@ -2916,7 +2949,7 @@ function App() {
                     </div>
 
                     {debouncedSearchQuery ? (
-                      <div className="absolute left-6 right-6 top-[100%] z-30 mt-2 max-h-[420px] overflow-auto rounded-xl border border-border bg-white p-3 shadow-lg">
+                      <div className="absolute left-6 right-6 top-[100%] z-30 mt-2 max-h-[420px] overflow-auto rounded-2xl bg-cloud p-3 shadow-xl">
                         {!canRunDebouncedSearch ? (
                           <p className="text-xs text-muted">
                             Type at least {SEARCH_MIN_TEXT_LENGTH} characters, or use tag filters.
@@ -2946,7 +2979,7 @@ function App() {
                                       songIds: [song.id],
                                       source: "search",
                                     }}
-                                    className="group/song flex w-full select-none items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="group/song flex w-full select-none items-center justify-between rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
                                       setQueueSourceSongs(searchResults.songs);
                                       setQueueSourceLabel("Search Results");
@@ -3012,7 +3045,7 @@ function App() {
                                   <button
                                     key={`${album.album}-${album.album_artist}`}
                                     type="button"
-                                    className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
                                       perfViewSwitchRef.current = {
                                         view: "albums",
@@ -3048,7 +3081,7 @@ function App() {
                                   <button
                                     key={artist.artist}
                                     type="button"
-                                    className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
                                       perfViewSwitchRef.current = {
                                         view: "artists",
@@ -3081,7 +3114,7 @@ function App() {
                                   <button
                                     key={playlist.id}
                                     type="button"
-                                    className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
                                       openPlaylist(playlist.id);
                                       setSearchQuery("");
@@ -3113,7 +3146,7 @@ function App() {
                                   <button
                                     key={folder.id}
                                     type="button"
-                                    className="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
                                       openPlaylist(folder.id);
                                       setSearchQuery("");
@@ -3140,8 +3173,8 @@ function App() {
 
                   <section className="min-h-0 flex-1 px-4 pb-4 pt-2">
                     {activeView === "songs" ? (
-                      <div className="flex h-full min-h-0 flex-col rounded-xl border border-border bg-white">
-                        <div className="grid grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] gap-3 border-b border-border bg-surface px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                      <div className="flex h-full min-h-0 flex-col rounded-2xl bg-cloud/5">
+                        <div className="grid grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] gap-3 rounded-t-2xl bg-cloud/8 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
                           <span>#</span>
                           <button
                             type="button"
@@ -3275,15 +3308,15 @@ function App() {
                                       });
                                     }}
                                     className={cn(
-                                      "group/song grid h-full w-full select-none grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] items-center gap-3 border-b border-border/60 px-3 text-left text-sm transition-colors",
-                                      "hover:bg-sky/15",
-                                      isSelected && "bg-sky/20",
-                                      isActive && "bg-blossom/25",
+                                      "group/song grid h-full w-full select-none grid-cols-[48px_2fr_1.6fr_1.6fr_120px_90px] items-center gap-3 px-3 text-left text-sm text-cloud transition-colors",
+                                      "hover:bg-cloud/8",
+                                      isSelected && "bg-leaf/15",
+                                      isActive && "border-l-2 border-l-blossom bg-blossom/20",
                                     )}
                                   >
                                     {song ? (
                                       <>
-                                        <span className="text-muted">{virtualRow.index + 1}</span>
+                                        <span className="text-muted-on-dark">{virtualRow.index + 1}</span>
                                         <div className="flex min-w-0 items-center gap-2">
                                           <SongArtwork
                                             artworkPath={song.artwork_path}
@@ -3300,7 +3333,7 @@ function App() {
                                                 {song.title}
                                               </span>
                                               {song.custom_start_ms > 0 ? (
-                                                <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted" />
+                                                <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-on-dark" />
                                               ) : null}
                                             </div>
                                             {song.tags.length > 0 ? (
@@ -3308,7 +3341,7 @@ function App() {
                                                 {song.tags.slice(0, 3).map((tag) => (
                                                   <span
                                                     key={tag.id}
-                                                    className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] leading-none"
+                                                    className="rounded-full border border-cloud/20 px-1.5 py-0.5 text-[10px] leading-none text-cloud"
                                                     style={{ backgroundColor: `${tag.color}40` }}
                                                   >
                                                     {tag.name}
@@ -3318,19 +3351,19 @@ function App() {
                                             ) : null}
                                           </div>
                                         </div>
-                                        <span className="truncate text-muted">{song.artist}</span>
-                                        <span className="truncate text-muted">{song.album}</span>
-                                        <span className="text-right text-muted">
+                                        <span className="truncate text-muted-on-dark">{song.artist}</span>
+                                        <span className="truncate text-muted-on-dark">{song.album}</span>
+                                        <span className="text-right text-muted-on-dark">
                                           {formatDuration(song.duration_ms)}
                                         </span>
-                                        <span className="text-right text-muted">
+                                        <span className="text-right text-muted-on-dark">
                                           {song.play_count}
                                         </span>
                                       </>
                                     ) : (
                                       <>
-                                        <span className="text-muted">{virtualRow.index + 1}</span>
-                                        <span className="col-span-5 text-muted">Loading...</span>
+                                        <span className="text-muted-on-dark">{virtualRow.index + 1}</span>
+                                        <span className="col-span-5 text-muted-on-dark">Loading...</span>
                                       </>
                                     )}
                                   </DraggableSongButton>
@@ -3339,7 +3372,7 @@ function App() {
                             })}
 
                             {songCount === 0 ? (
-                              <p className="p-6 text-sm text-muted">No songs to display yet.</p>
+                              <p className="p-6 text-sm text-muted-on-dark">No songs to display yet.</p>
                             ) : null}
                           </div>
                         </div>
@@ -3348,9 +3381,9 @@ function App() {
 
                     {activeView === "playlist" ? (
                       activePlaylist?.is_folder ? (
-                        <div className="flex h-full min-h-0 flex-col rounded-xl border border-border bg-white">
-                          <div className="border-b border-border px-4 py-3">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                        <div className="flex h-full min-h-0 flex-col rounded-2xl bg-cloud/5">
+                          <div className="px-4 py-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
                               Folder Contents
                             </p>
                           </div>
@@ -3361,23 +3394,23 @@ function App() {
                                   <button
                                     key={child.id}
                                     type="button"
-                                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-sky/10"
+                                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8"
                                     onClick={() => openPlaylist(child.id)}
                                   >
                                     {child.is_folder ? (
-                                      <Folder className="h-4 w-4 shrink-0 text-muted" />
+                                      <Folder className="h-4 w-4 shrink-0 text-muted-on-dark" />
                                     ) : (
-                                      <ListMusic className="h-4 w-4 shrink-0 text-muted" />
+                                      <ListMusic className="h-4 w-4 shrink-0 text-muted-on-dark" />
                                     )}
                                     <span className="truncate">{child.name}</span>
-                                    <span className="ml-auto text-xs text-muted">
+                                    <span className="ml-auto text-xs text-muted-on-dark">
                                       {child.is_folder ? "Folder" : "Playlist"}
                                     </span>
                                   </button>
                                 ))}
                               </div>
                             ) : (
-                              <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted">
+                              <div className="flex h-full items-center justify-center rounded-2xl bg-cloud/5 text-sm text-muted-on-dark">
                                 This folder is empty.
                               </div>
                             )}
@@ -3430,13 +3463,13 @@ function App() {
                     ) : null}
 
                     {activeView === "albums" ? (
-                      <div className="h-full rounded-xl border border-border bg-white p-4">
+                      <div className="h-full rounded-2xl bg-cloud/5 p-4">
                         {selectedAlbum ? (
                           <div className="flex h-full min-h-0 flex-col">
                             <div className="mb-4 flex items-center justify-between">
                               <div>
-                                <h3 className="text-lg font-semibold">{selectedAlbum.album}</h3>
-                                <p className="text-sm text-muted">{selectedAlbum.album_artist}</p>
+                                <h3 className="text-lg font-semibold text-cloud">{selectedAlbum.album}</h3>
+                                <p className="text-sm text-muted-on-dark">{selectedAlbum.album_artist}</p>
                               </div>
                               <Button
                                 variant="secondary"
@@ -3449,17 +3482,17 @@ function App() {
                               </Button>
                             </div>
 
-                            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-border">
+                            <div className="min-h-0 flex-1 overflow-auto rounded-2xl bg-cloud/5">
                               {loadingAlbumTracks ? (
-                                <p className="p-4 text-sm text-muted">Loading album tracks...</p>
+                                <p className="p-4 text-sm text-muted-on-dark">Loading album tracks...</p>
                               ) : (
                                 albumTracks.map((song, index) => (
                                   <button
                                     key={song.id}
                                     type="button"
                                     className={cn(
-                                      "group/song grid w-full select-none grid-cols-[48px_2fr_1.6fr_120px] gap-3 border-b border-border/60 px-3 py-2 text-left text-sm hover:bg-sky/15",
-                                      currentSong?.id === song.id && "bg-blossom/25",
+                                      "group/song grid w-full select-none grid-cols-[48px_2fr_1.6fr_120px] gap-3 px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8",
+                                      currentSong?.id === song.id && "border-l-2 border-l-blossom bg-blossom/20",
                                     )}
                                     onDoubleClick={() => {
                                       setQueueSourceSongs(albumTracks);
@@ -3469,7 +3502,7 @@ function App() {
                                       );
                                     }}
                                   >
-                                    <span className="text-muted">{index + 1}</span>
+                                    <span className="text-muted-on-dark">{index + 1}</span>
                                     <div className="flex min-w-0 items-center gap-2">
                                       <SongArtwork
                                         artworkPath={song.artwork_path}
@@ -3484,8 +3517,8 @@ function App() {
                                       />
                                       <span className="truncate font-medium">{song.title}</span>
                                     </div>
-                                    <span className="truncate text-muted">{song.artist}</span>
-                                    <span className="text-right text-muted">
+                                    <span className="truncate text-muted-on-dark">{song.artist}</span>
+                                    <span className="text-right text-muted-on-dark">
                                       {formatDuration(song.duration_ms)}
                                     </span>
                                   </button>
@@ -3496,7 +3529,7 @@ function App() {
                         ) : (
                           <div ref={albumsScrollRef} className="h-full overflow-auto">
                             {isLoadingAlbums ? (
-                              <p className="text-sm text-muted">Loading albums...</p>
+                              <p className="text-sm text-muted-on-dark">Loading albums...</p>
                             ) : (
                               <div
                                 style={{
@@ -3530,21 +3563,21 @@ function App() {
                                           <button
                                             key={`${album.album}-${album.album_artist}`}
                                             type="button"
-                                            className="rounded-xl border border-border bg-surface/80 p-4 text-left transition-colors hover:bg-sky/20"
+                                            className="rounded-2xl bg-cloud/8 p-4 text-left transition-all hover:-translate-y-0.5 hover:bg-cloud/12"
                                             onClick={() => {
                                               void openAlbum(album).catch((error: unknown) =>
                                                 setErrorMessage(String(error)),
                                               );
                                             }}
                                           >
-                                            <div className="mb-3 flex h-32 items-center justify-center rounded-lg bg-sky/25">
-                                              <Disc3 className="h-8 w-8 text-night/70" />
+                                            <div className="mb-3 flex h-32 items-center justify-center rounded-lg bg-cloud/10">
+                                              <Disc3 className="h-8 w-8 text-muted-on-dark" />
                                             </div>
-                                            <p className="truncate font-medium">{album.album}</p>
-                                            <p className="truncate text-sm text-muted">
+                                            <p className="truncate font-medium text-cloud">{album.album}</p>
+                                            <p className="truncate text-sm text-muted-on-dark">
                                               {album.album_artist}
                                             </p>
-                                            <p className="mt-1 text-xs text-muted">
+                                            <p className="mt-1 text-xs text-muted-on-dark">
                                               {album.song_count} songs •{" "}
                                               {formatDuration(album.total_duration_ms)}
                                             </p>
@@ -3562,14 +3595,14 @@ function App() {
                     ) : null}
 
                     {activeView === "artists" ? (
-                      <div className="h-full rounded-xl border border-border bg-white p-4">
+                      <div className="h-full rounded-2xl bg-cloud/5 p-4">
                         {!selectedArtist ? (
                           <div
                             ref={artistsScrollRef}
-                            className="h-full overflow-auto rounded-lg border border-border"
+                            className="h-full overflow-auto rounded-2xl"
                           >
                             {isLoadingArtists ? (
-                              <p className="p-4 text-sm text-muted">Loading artists...</p>
+                              <p className="p-4 text-sm text-muted-on-dark">Loading artists...</p>
                             ) : (
                               <div
                                 style={{
@@ -3597,7 +3630,7 @@ function App() {
                                     >
                                       <button
                                         type="button"
-                                        className="grid h-full w-full grid-cols-[2fr_120px_120px] gap-3 border-b border-border/60 px-3 text-left text-sm hover:bg-sky/15"
+                                        className="grid h-full w-full grid-cols-[2fr_120px_120px] gap-3 px-3 text-left text-sm text-cloud hover:bg-cloud/8"
                                         onClick={() => {
                                           void openArtist(artist.artist).catch((error: unknown) =>
                                             setErrorMessage(String(error)),
@@ -3607,10 +3640,10 @@ function App() {
                                         <span className="truncate font-medium">
                                           {artist.artist}
                                         </span>
-                                        <span className="text-right text-muted">
+                                        <span className="text-right text-muted-on-dark">
                                           {artist.album_count} albums
                                         </span>
-                                        <span className="text-right text-muted">
+                                        <span className="text-right text-muted-on-dark">
                                           {artist.song_count} songs
                                         </span>
                                       </button>
@@ -3624,8 +3657,8 @@ function App() {
                           <div className="flex h-full min-h-0 flex-col">
                             <div className="mb-4 flex items-center justify-between">
                               <div>
-                                <h3 className="text-lg font-semibold">{selectedArtist}</h3>
-                                <p className="text-sm text-muted">Artist view</p>
+                                <h3 className="text-lg font-semibold text-cloud">{selectedArtist}</h3>
+                                <p className="text-sm text-muted-on-dark">Artist view</p>
                               </div>
                               <Button
                                 variant="secondary"
@@ -3641,24 +3674,24 @@ function App() {
                             </div>
 
                             {!selectedArtistAlbum ? (
-                              <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-border p-3">
+                              <div className="min-h-0 flex-1 overflow-auto rounded-2xl p-3">
                                 {loadingArtistAlbums ? (
-                                  <p className="text-sm text-muted">Loading albums...</p>
+                                  <p className="text-sm text-muted-on-dark">Loading albums...</p>
                                 ) : (
                                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
                                     {artistAlbums.map((album) => (
                                       <button
                                         key={`${album.album}-${album.album_artist}`}
                                         type="button"
-                                        className="rounded-xl border border-border bg-surface/80 p-4 text-left hover:bg-sky/20"
+                                        className="rounded-2xl bg-cloud/8 p-4 text-left transition-all hover:-translate-y-0.5 hover:bg-cloud/12"
                                         onClick={() => {
                                           void openArtistAlbum(album).catch((error: unknown) =>
                                             setErrorMessage(String(error)),
                                           );
                                         }}
                                       >
-                                        <p className="truncate font-medium">{album.album}</p>
-                                        <p className="text-sm text-muted">
+                                        <p className="truncate font-medium text-cloud">{album.album}</p>
+                                        <p className="text-sm text-muted-on-dark">
                                           {album.song_count} songs
                                         </p>
                                       </button>
@@ -3667,11 +3700,11 @@ function App() {
                                 )}
                               </div>
                             ) : (
-                              <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-border">
-                                <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                              <div className="min-h-0 flex-1 overflow-auto rounded-2xl bg-cloud/5">
+                                <div className="flex items-center justify-between px-3 py-2">
                                   <div>
-                                    <p className="font-medium">{selectedArtistAlbum.album}</p>
-                                    <p className="text-xs text-muted">
+                                    <p className="font-medium text-cloud">{selectedArtistAlbum.album}</p>
+                                    <p className="text-xs text-muted-on-dark">
                                       {selectedArtistAlbum.album_artist}
                                     </p>
                                   </div>
@@ -3687,15 +3720,15 @@ function App() {
                                 </div>
 
                                 {loadingArtistAlbumTracks ? (
-                                  <p className="p-4 text-sm text-muted">Loading tracks...</p>
+                                  <p className="p-4 text-sm text-muted-on-dark">Loading tracks...</p>
                                 ) : (
                                   artistAlbumTracks.map((song, index) => (
                                     <button
                                       key={song.id}
                                       type="button"
                                       className={cn(
-                                        "group/song grid w-full select-none grid-cols-[48px_2fr_120px] gap-3 border-b border-border/60 px-3 py-2 text-left text-sm hover:bg-sky/15",
-                                        currentSong?.id === song.id && "bg-blossom/25",
+                                        "group/song grid w-full select-none grid-cols-[48px_2fr_120px] gap-3 px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8",
+                                        currentSong?.id === song.id && "border-l-2 border-l-blossom bg-blossom/20",
                                       )}
                                       onDoubleClick={() => {
                                         setQueueSourceSongs(artistAlbumTracks);
@@ -3705,7 +3738,7 @@ function App() {
                                         );
                                       }}
                                     >
-                                      <span className="text-muted">{index + 1}</span>
+                                      <span className="text-muted-on-dark">{index + 1}</span>
                                       <div className="flex min-w-0 items-center gap-2">
                                         <SongArtwork
                                           artworkPath={song.artwork_path}
@@ -3725,7 +3758,7 @@ function App() {
                                         />
                                         <span className="truncate font-medium">{song.title}</span>
                                       </div>
-                                      <span className="text-right text-muted">
+                                      <span className="text-right text-muted-on-dark">
                                         {formatDuration(song.duration_ms)}
                                       </span>
                                     </button>
@@ -3739,7 +3772,7 @@ function App() {
                     ) : null}
 
                     {activeView === "history" ? (
-                      <div className="h-full rounded-xl border border-border bg-white">
+                      <div className="h-full rounded-2xl bg-cloud/5">
                         <HistoryView
                           onPlaySong={(songId) => {
                             const cached = songLookupById.get(songId);
@@ -3765,7 +3798,7 @@ function App() {
                     ) : null}
 
                     {activeView === "stats" ? (
-                      <div className="h-full rounded-xl border border-border bg-white p-4">
+                      <div className="h-full rounded-2xl bg-cloud/5 p-4">
                         <div className="h-full overflow-auto">
                           <StatsView refreshSignal={statsRefreshSignal} />
                         </div>
@@ -3773,7 +3806,7 @@ function App() {
                     ) : null}
 
                     {activeView === "settings" ? (
-                      <div className="h-full rounded-xl border border-border bg-white p-4">
+                      <div className="h-full rounded-2xl bg-cloud/5 p-4">
                         <div className="h-full overflow-auto">
                           <TagsSettingsPanel
                             tags={tags}
@@ -3784,11 +3817,11 @@ function App() {
                           />
 
                           <div className="mt-8">
-                            <h3 className="mb-3 text-sm font-semibold">Export</h3>
+                            <h3 className="mb-3 text-sm font-semibold text-cloud">Export</h3>
                             <div className="flex flex-wrap gap-2">
                               <button
                                 type="button"
-                                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sky/10"
+                                className="flex items-center gap-2 rounded-xl bg-cloud/8 px-3 py-2 text-sm text-cloud transition-all hover:bg-cloud/12"
                                 onClick={() => void handleExportPlayStatsCsv()}
                               >
                                 <Download className="h-4 w-4" />
@@ -3796,7 +3829,7 @@ function App() {
                               </button>
                               <button
                                 type="button"
-                                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sky/10"
+                                className="flex items-center gap-2 rounded-xl bg-cloud/8 px-3 py-2 text-sm text-cloud transition-all hover:bg-cloud/12"
                                 onClick={() => void handleExportTagsCsv()}
                               >
                                 <Download className="h-4 w-4" />
@@ -3804,7 +3837,7 @@ function App() {
                               </button>
                               <button
                                 type="button"
-                                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-sky/10"
+                                className="flex items-center gap-2 rounded-xl bg-cloud/8 px-3 py-2 text-sm text-cloud transition-all hover:bg-cloud/12"
                                 onClick={() => void handleExportHierarchyMd()}
                               >
                                 <Download className="h-4 w-4" />
@@ -3818,50 +3851,32 @@ function App() {
                   </section>
                 </main>
               </Panel>
+              {upNextOpen && (
+                <>
+                  <Separator className="w-1 bg-transparent transition-colors hover:bg-leaf/40" />
+                  <Panel id="queue" defaultSize="280px" minSize="240px" maxSize="400px" className="bg-surface-dark">
+                    <UpNextPanel
+                      nowPlaying={currentSong}
+                      upNext={upNext}
+                      playingFrom={playingFrom}
+                      playingFromLabel={playingFromLabel}
+                      onClose={closeUpNext}
+                      onRemoveUpNext={removeFromUpNext}
+                    />
+                  </Panel>
+                </>
+              )}
             </Group>
           </div>
 
-          <TransportBar
-            currentSong={currentSong}
-            queueLength={queue.length}
-            songCount={songCount}
-            upNextCount={upNext.length}
-            shuffleEnabled={shuffleEnabled}
-            repeatMode={repeatMode}
-            clipboardHint={clipboardHint}
-            clipboardCount={clipboardSongIds.length}
-            volume={persistedVolume}
-            onPrevious={playPrevious}
-            onTogglePlayback={() => {
-              void handleTogglePlayback().catch((error: unknown) => setErrorMessage(String(error)));
-            }}
-            onNext={playNext}
-            onToggleShuffle={handleToggleShuffle}
-            onCycleRepeat={() => setRepeatMode(cycleRepeatMode(repeatMode))}
-            onSeek={(nextPosition, nextDurationMs) => {
-              setPosition(nextPosition, nextDurationMs);
-              void audioApi
-                .seek(nextPosition)
-                .catch((error: unknown) => setErrorMessage(String(error)));
-            }}
-            onOpenUpNext={openUpNext}
-            onClearClipboard={clearClipboard}
-            onVolumeChange={(nextVolume) => {
-              setPersistedVolume(nextVolume);
-              void audioApi
-                .setVolume(nextVolume)
-                .catch((error: unknown) => setErrorMessage(String(error)));
-            }}
-          />
-
           {songContextMenu ? (
             <div
-              className="fixed z-50 rounded-lg border border-border bg-white p-1 shadow-lg"
+              className="fixed z-50 rounded-2xl bg-cloud p-1 shadow-xl"
               style={{ left: songContextMenu.x, top: songContextMenu.y }}
             >
               <button
                 type="button"
-                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
                 onClick={() => {
                   if (songContextMenu.source === "playlist") {
                     void playFromPlaylistIndex(songContextMenu.index).catch((error: unknown) =>
@@ -3879,7 +3894,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
                 onClick={() => {
                   addSongsToQueue(songContextMenu.songIds);
                   setSongContextMenu(null);
@@ -3889,7 +3904,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
                 onClick={() => {
                   setClipboardSongIds(songContextMenu.songIds);
                   setClipboardHint(`${songContextMenu.songIds.length} song(s) copied`);
@@ -3900,7 +3915,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
                 onClick={() => {
                   void openManageTagsForSongs(songContextMenu.songIds);
                   setSongContextMenu(null);
@@ -3910,7 +3925,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
                 onClick={() => {
                   setMetadataTargetSongIds(songContextMenu.songIds);
                   setShowEditCommentDialog(true);
@@ -3921,7 +3936,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-sky/10"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
                 onClick={() => {
                   setMetadataTargetSongIds(songContextMenu.songIds);
                   setShowCustomStartDialog(true);
@@ -3997,21 +4012,12 @@ function App() {
 
         <DragOverlay>
           {dragOverlayCount > 0 ? (
-            <div className="rounded-lg border border-border bg-white px-3 py-2 shadow-lg">
+            <div className="rounded-2xl bg-cloud px-3 py-2 shadow-xl">
               <p className="text-sm font-medium">{dragOverlayLabel ?? "Dragging"}</p>
             </div>
           ) : null}
         </DragOverlay>
 
-        <UpNextPanel
-          isOpen={upNextOpen}
-          nowPlaying={currentSong}
-          upNext={upNext}
-          playingFrom={playingFrom}
-          playingFromLabel={playingFromLabel}
-          onClose={closeUpNext}
-          onRemoveUpNext={removeFromUpNext}
-        />
       </DndContext>
     </TooltipProvider>
   );

@@ -62,15 +62,15 @@ export function PlaylistSidebar({
   }, [contextMenu]);
 
   return (
-    <section className="mt-4 rounded-xl border border-border bg-white p-3">
+    <section className="mt-4 border-t border-border-dark pt-4">
       <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Playlists</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-on-dark">Playlists</p>
         <div className="flex items-center gap-1">
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7"
+            className="h-7 w-7 text-muted-on-dark hover:bg-cloud/8 hover:text-cloud"
             onClick={() => onCreatePlaylist(null)}
             title="New playlist"
           >
@@ -80,7 +80,7 @@ export function PlaylistSidebar({
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7"
+            className="h-7 w-7 text-muted-on-dark hover:bg-cloud/8 hover:text-cloud"
             onClick={() => onCreateFolder(null)}
             title="New folder"
           >

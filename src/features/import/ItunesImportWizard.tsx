@@ -47,8 +47,8 @@ export function ItunesImportWizard({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl border border-border bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/50 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-3xl bg-cloud p-8 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold">Import iTunes Library</h3>
@@ -73,7 +73,7 @@ export function ItunesImportWizard({
           <div className="space-y-4">
             <p className="text-sm text-muted">Preview detected content before importing.</p>
             {preview ? (
-              <div className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-surface p-4 text-sm">
+              <div className="grid grid-cols-2 gap-3 rounded-2xl bg-sand/50 p-4 text-sm">
                 <p>Tracks found: {preview.tracks_found.toLocaleString()}</p>
                 <p>Playlists found: {preview.playlists_found.toLocaleString()}</p>
                 <p>Matched tracks: {preview.matched_tracks.toLocaleString()}</p>
@@ -153,7 +153,7 @@ export function ItunesImportWizard({
             </div>
 
             {progress ? (
-              <div className="space-y-2 rounded-xl border border-border bg-surface p-4 text-sm">
+              <div className="space-y-2 rounded-2xl bg-sand/50 p-4 text-sm">
                 <p className="font-medium">Stage: {progress.stage}</p>
                 <div className="h-2 w-full overflow-hidden rounded-full bg-sky/30">
                   <div
@@ -190,7 +190,7 @@ export function ItunesImportWizard({
             </div>
 
             {summary ? (
-              <div className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-surface p-4 text-sm">
+              <div className="grid grid-cols-2 gap-3 rounded-2xl bg-sand/50 p-4 text-sm">
                 <p>Tracks found: {summary.tracks_found.toLocaleString()}</p>
                 <p>Matched tracks: {summary.matched_tracks.toLocaleString()}</p>
                 <p>Unmatched tracks: {summary.unmatched_tracks.toLocaleString()}</p>

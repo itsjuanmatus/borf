@@ -25,14 +25,14 @@ export function ManageTagsDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/40 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-border bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-night/50 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-3xl bg-cloud p-8 shadow-2xl">
         <h3 className="text-lg font-semibold">Manage Tags</h3>
         <p className="mt-1 text-sm text-muted">
           Apply tags to {targetSongCount} selected song{targetSongCount === 1 ? "" : "s"}.
         </p>
 
-        <div className="mt-4 max-h-72 space-y-2 overflow-auto rounded-lg border border-border p-3">
+        <div className="mt-4 max-h-72 space-y-2 overflow-auto rounded-2xl bg-sand/50 p-3">
           {tags.length === 0 ? <p className="text-sm text-muted">No tags available.</p> : null}
           {tags.map((tag) => (
             <label key={tag.id} className="flex items-center gap-2 text-sm">

@@ -38,9 +38,9 @@ export function TagsSettingsPanel({
   };
 
   return (
-    <section className="rounded-xl border border-border bg-white p-4">
-      <h3 className="text-base font-semibold">Tags</h3>
-      <p className="mt-1 text-sm text-muted">Create and manage custom tags for songs.</p>
+    <section className="rounded-2xl bg-cloud/8 p-4">
+      <h3 className="text-base font-semibold text-cloud">Tags</h3>
+      <p className="mt-1 text-sm text-muted-on-dark">Create and manage custom tags for songs.</p>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Input
@@ -53,7 +53,7 @@ export function TagsSettingsPanel({
           type="color"
           value={newTagColor}
           onChange={(event) => setNewTagColor(event.target.value)}
-          className="h-9 w-14 rounded border border-border bg-transparent p-1"
+          className="h-9 w-14 rounded-lg bg-cloud/10 p-1"
           aria-label="Tag color"
         />
         <Button onClick={() => void handleCreate()} disabled={isCreating || !newTagName.trim()}>
@@ -63,18 +63,18 @@ export function TagsSettingsPanel({
       </div>
 
       <div className="mt-5 space-y-2">
-        {tags.length === 0 ? <p className="text-sm text-muted">No tags yet.</p> : null}
+        {tags.length === 0 ? <p className="text-sm text-muted-on-dark">No tags yet.</p> : null}
         {tags.map((tag) => (
           <div
             key={tag.id}
-            className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2"
+            className="flex items-center justify-between rounded-xl bg-cloud/5 px-3 py-2"
           >
             <div className="flex min-w-0 items-center gap-2">
               <span
-                className="h-3.5 w-3.5 rounded-full border border-border/70"
+                className="h-3.5 w-3.5 rounded-full border border-cloud/20"
                 style={{ backgroundColor: tag.color }}
               />
-              <span className="truncate text-sm">{tag.name}</span>
+              <span className="truncate text-sm text-cloud">{tag.name}</span>
             </div>
             <div className="flex items-center gap-1">
               <Button

@@ -101,10 +101,10 @@ function TrackRow({
         {...(reorderEnabled ? sortable.attributes : {})}
         {...(reorderEnabled ? sortable.listeners : {})}
         className={cn(
-          "group/song grid w-full select-none grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 py-2 text-left text-sm",
-          "hover:bg-sky/15",
-          selected && "bg-sky/20",
-          currentSongId === track.song.id && "bg-blossom/25",
+          "group/song grid w-full select-none grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
+          "hover:bg-cloud/8",
+          selected && "bg-leaf/15",
+          currentSongId === track.song.id && "border-l-2 border-l-blossom bg-blossom/20",
         )}
         onClick={(event) =>
           onSelectTrack(track.song.id, index, {
@@ -115,7 +115,7 @@ function TrackRow({
         onDoubleClick={() => onPlayTrack(index)}
         onContextMenu={(event) => onTrackContextMenu(event, track.song.id, index)}
       >
-        <span className="flex items-center gap-1 text-xs text-muted">
+        <span className="flex items-center gap-1 text-xs text-muted-on-dark">
           {reorderEnabled ? <GripVertical className="h-3.5 w-3.5" /> : null}
           {index + 1}
         </span>
@@ -129,7 +129,7 @@ function TrackRow({
             <div className="flex items-center gap-1.5">
               <span className="truncate font-medium">{track.song.title}</span>
               {track.song.custom_start_ms > 0 ? (
-                <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted" />
+                <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-on-dark" />
               ) : null}
             </div>
             {track.song.tags.length > 0 ? (
@@ -137,7 +137,7 @@ function TrackRow({
                 {track.song.tags.slice(0, 3).map((tag) => (
                   <span
                     key={tag.id}
-                    className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] leading-none"
+                    className="rounded-full border border-cloud/20 px-1.5 py-0.5 text-[10px] leading-none text-cloud"
                     style={{ backgroundColor: `${tag.color}40` }}
                   >
                     {tag.name}
@@ -147,8 +147,8 @@ function TrackRow({
             ) : null}
           </div>
         </div>
-        <span className="truncate text-muted">{track.song.artist}</span>
-        <span className="text-right text-muted">{formatDuration(track.song.duration_ms)}</span>
+        <span className="truncate text-muted-on-dark">{track.song.artist}</span>
+        <span className="text-right text-muted-on-dark">{formatDuration(track.song.duration_ms)}</span>
         <span className="flex justify-end">
           <Button
             type="button"
@@ -210,8 +210,8 @@ export function PlaylistView({
 
   if (!playlist) {
     return (
-      <div className="flex h-full items-center justify-center rounded-xl border border-border bg-white">
-        <p className="text-sm text-muted">Select a playlist to view songs.</p>
+      <div className="flex h-full items-center justify-center rounded-2xl bg-cloud/5">
+        <p className="text-sm text-muted-on-dark">Select a playlist to view songs.</p>
       </div>
     );
   }
@@ -254,7 +254,7 @@ export function PlaylistView({
                   onTrackContextMenu={onTrackContextMenu}
                 />
               ) : (
-                <div className="grid h-full w-full grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 border-b border-border/60 px-3 text-sm text-muted">
+                <div className="grid h-full w-full grid-cols-[32px_2fr_1.3fr_110px_46px] items-center gap-3 px-3 text-sm text-muted-on-dark">
                   <span>{virtualRow.index + 1}</span>
                   <span>Loading...</span>
                   <span />
@@ -267,7 +267,7 @@ export function PlaylistView({
         })}
 
         {trackCount === 0 ? (
-          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted">
+          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-on-dark">
             <ListMusic className="h-4 w-4" />
             Drop songs here or use paste.
           </div>
@@ -280,14 +280,14 @@ export function PlaylistView({
     <div
       ref={droppable.setNodeRef}
       className={cn(
-        "flex h-full min-h-0 flex-col rounded-xl border border-border bg-white",
-        droppable.isOver && "ring-1 ring-sky",
+        "flex h-full min-h-0 flex-col rounded-2xl bg-cloud/5",
+        droppable.isOver && "ring-1 ring-leaf",
       )}
     >
-      <header className="flex items-center justify-between border-b border-border px-4 py-3">
+      <header className="flex items-center justify-between px-4 py-3">
         <div className="min-w-0">
-          <h3 className="truncate text-base font-semibold">{playlist.name}</h3>
-          <p className="text-xs text-muted">{trackCount.toLocaleString()} songs</p>
+          <h3 className="truncate text-base font-semibold text-cloud">{playlist.name}</h3>
+          <p className="text-xs text-muted-on-dark">{trackCount.toLocaleString()} songs</p>
         </div>
         <div className="flex items-center gap-2">
           <Button type="button" variant="secondary" size="sm" onClick={onToggleReorderMode}>
@@ -306,7 +306,7 @@ export function PlaylistView({
         </div>
       </header>
 
-      <div className="grid grid-cols-[32px_2fr_1.3fr_110px_46px] gap-3 border-b border-border bg-surface px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
+      <div className="grid grid-cols-[32px_2fr_1.3fr_110px_46px] gap-3 bg-cloud/8 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
         <span>#</span>
         <span>Title</span>
         <span>Artist</span>
@@ -328,7 +328,7 @@ export function PlaylistView({
       )}
 
       {isReorderMode && !canReorder ? (
-        <div className="border-t border-border px-3 py-2 text-xs text-muted">
+        <div className="px-3 py-2 text-xs text-muted-on-dark">
           Loading full playlist before reordering...
         </div>
       ) : null}

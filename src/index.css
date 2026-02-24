@@ -1,19 +1,25 @@
 @import "tailwindcss";
 
 @theme {
+  /* Core palette */
   --color-leaf: oklch(0.72 0.12 145);
   --color-sky: oklch(0.84 0.07 220);
-  --color-sand: oklch(0.92 0.04 75);
+  --color-sand: oklch(0.94 0.03 80);
   --color-blossom: oklch(0.8 0.08 10);
-  --color-nook: oklch(0.52 0.06 60);
+  --color-nook: oklch(0.45 0.04 60);
   --color-cloud: oklch(0.97 0.01 100);
   --color-night: oklch(0.25 0.03 260);
 
-  --color-bg: var(--color-cloud);
-  --color-surface: oklch(0.96 0.01 90);
-  --color-text: oklch(0.25 0.02 50);
-  --color-muted: oklch(0.6 0.02 50);
-  --color-border: oklch(0.88 0.02 80);
+  /* Semantic tokens */
+  --color-bg: var(--color-sand);
+  --color-surface: oklch(0.92 0.02 80);
+  --color-surface-dark: oklch(0.3 0.03 260);
+  --color-text: oklch(0.22 0.02 50);
+  --color-text-on-dark: oklch(0.92 0.01 80);
+  --color-muted: oklch(0.55 0.02 50);
+  --color-muted-on-dark: oklch(0.65 0.01 220);
+  --color-border: oklch(0.85 0.02 75);
+  --color-border-dark: oklch(0.35 0.02 260);
   --color-accent: var(--color-leaf);
   --color-playing: var(--color-blossom);
 }
@@ -46,12 +52,12 @@ body {
   background:
     radial-gradient(
       circle at top right,
-      color-mix(in srgb, var(--color-sky) 28%, white) 0%,
+      color-mix(in srgb, var(--color-sky) 14%, transparent) 0%,
       transparent 48%
     ),
     radial-gradient(
       circle at bottom left,
-      color-mix(in srgb, var(--color-blossom) 22%, white) 0%,
+      color-mix(in srgb, var(--color-blossom) 10%, transparent) 0%,
       transparent 45%
     ),
     var(--color-bg);

@@ -102,13 +102,13 @@ export function StatsView({ refreshSignal }: StatsViewProps) {
 
   if (loading && !stats) {
     return (
-      <div className="flex h-full items-center justify-center text-muted">Loading stats...</div>
+      <div className="flex h-full items-center justify-center text-muted-on-dark">Loading stats...</div>
     );
   }
 
   if (!stats || (stats.total_plays === 0 && !loading)) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-on-dark">
         <BarChart2 className="h-12 w-12 opacity-40" />
         <p className="text-lg font-medium">No stats yet</p>
         <p className="text-sm">Play some songs to see your listening statistics.</p>
@@ -153,8 +153,8 @@ export function StatsView({ refreshSignal }: StatsViewProps) {
           <button
             key={p.label}
             type="button"
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-              periodDays === p.value ? "bg-sky/30 text-text" : "text-muted hover:bg-sky/10"
+            className={`rounded-xl px-3 py-1.5 text-sm font-medium transition-colors ${
+              periodDays === p.value ? "bg-leaf/25 text-cloud" : "text-muted-on-dark hover:bg-cloud/8"
             }`}
             onClick={() => setPeriodDays(p.value)}
           >
@@ -265,7 +265,7 @@ export function StatsView({ refreshSignal }: StatsViewProps) {
                     className="h-3 w-3 rounded-sm"
                     style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
                   />
-                  <span className="text-muted">
+                  <span className="text-muted-on-dark">
                     {g.name} ({g.value})
                   </span>
                 </div>
@@ -300,17 +300,17 @@ export function StatsView({ refreshSignal }: StatsViewProps) {
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-border bg-white/80 p-4">
-      <p className="text-sm text-muted">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tracking-tight">{value}</p>
+    <div className="rounded-2xl bg-cloud/8 p-4">
+      <p className="text-sm text-muted-on-dark">{label}</p>
+      <p className="mt-1 text-2xl font-semibold tracking-tight text-cloud">{value}</p>
     </div>
   );
 }
 
 function ChartSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mb-6 rounded-xl border border-border bg-white/80 p-4">
-      <h3 className="mb-3 text-sm font-semibold text-muted">{title}</h3>
+    <div className="mb-6 rounded-2xl bg-cloud/8 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-muted-on-dark">{title}</h3>
       {children}
     </div>
   );
