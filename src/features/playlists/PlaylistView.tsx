@@ -10,6 +10,7 @@ import { cn } from "../../lib/utils";
 import type { DragSongPayload, PlaylistNode, PlaylistTrackItem } from "../../types";
 
 const TRACK_ROW_HEIGHT = 54;
+const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
 
 interface PlaylistViewProps {
   playlist: PlaylistNode | null;
@@ -31,6 +32,9 @@ interface PlaylistViewProps {
   onAddToQueue: (songId: string) => void;
   onRemoveSelected: () => void;
   onTrackContextMenu: (event: MouseEvent<HTMLButtonElement>, songId: string, index: number) => void;
+  initialScrollTop?: number;
+  restoreScrollTop?: number | null;
+  onScrollTopChange?: (scrollTop: number) => void;
 }
 
 interface TrackRowProps {
@@ -148,7 +152,9 @@ function TrackRow({
           </div>
         </div>
         <span className="truncate text-muted-on-dark">{track.song.artist}</span>
-        <span className="text-right text-muted-on-dark">{formatDuration(track.song.duration_ms)}</span>
+        <span className="text-right text-muted-on-dark">
+          {formatDuration(track.song.duration_ms)}
+        </span>
         <span className="flex justify-end">
           <Button
             type="button"
@@ -184,6 +190,9 @@ export function PlaylistView({
   onAddToQueue,
   onRemoveSelected,
   onTrackContextMenu,
+  initialScrollTop,
+  restoreScrollTop,
+  onScrollTopChange,
 }: PlaylistViewProps) {
   const droppable = useDroppable({
     id: playlist ? `playlist-tracks-drop:${playlist.id}` : "playlist-tracks-drop:none",
@@ -208,6 +217,57 @@ export function PlaylistView({
     onRequestTrackRange(firstVisibleIndex, lastVisibleIndex);
   }, [firstVisibleIndex, lastVisibleIndex, onRequestTrackRange, trackCount]);
 
+  useEffect(() => {
+    if (!playlist) {
+      return;
+    }
+    if (typeof initialScrollTop !== "number") {
+      return;
+    }
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    element.scrollTop = Math.max(0, initialScrollTop);
+  }, [initialScrollTop, playlist]);
+
+  useEffect(() => {
+    if (!playlist) {
+      return;
+    }
+    if (restoreScrollTop === null || restoreScrollTop === undefined) {
+      return;
+    }
+
+    const targetScrollTop = Math.max(0, restoreScrollTop);
+    let attempts = 0;
+    let frame = 0;
+
+    const applyRestore = () => {
+      const element = scrollRef.current;
+      if (!element) {
+        return;
+      }
+      element.scrollTop = targetScrollTop;
+      if (
+        Math.abs(element.scrollTop - targetScrollTop) <= 1 ||
+        attempts >= SCROLL_RESTORE_MAX_ATTEMPTS
+      ) {
+        return;
+      }
+      attempts += 1;
+      frame = window.requestAnimationFrame(applyRestore);
+    };
+
+    applyRestore();
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [playlist, restoreScrollTop]);
+
   if (!playlist) {
     return (
       <div className="flex h-full items-center justify-center rounded-2xl bg-cloud/5">
@@ -217,7 +277,11 @@ export function PlaylistView({
   }
 
   const content = (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+    <div
+      ref={scrollRef}
+      className="min-h-0 flex-1 overflow-auto"
+      onScroll={(event) => onScrollTopChange?.(event.currentTarget.scrollTop)}
+    >
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,

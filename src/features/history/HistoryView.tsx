@@ -6,6 +6,7 @@ import { historyApi } from "../../lib/api";
 import type { PlayHistoryEntry } from "../../types";
 
 const PAGE_SIZE = 100;
+const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
 
 interface DayGroup {
   label: string;
@@ -73,9 +74,17 @@ function flattenGroups(groups: DayGroup[]): FlatRow[] {
 
 interface HistoryViewProps {
   onPlaySong: (songId: string) => void;
+  initialScrollTop?: number;
+  restoreScrollTop?: number | null;
+  onScrollTopChange?: (scrollTop: number) => void;
 }
 
-export function HistoryView({ onPlaySong }: HistoryViewProps) {
+export function HistoryView({
+  onPlaySong,
+  initialScrollTop,
+  restoreScrollTop,
+  onScrollTopChange,
+}: HistoryViewProps) {
   const [entries, setEntries] = useState<PlayHistoryEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -121,6 +130,54 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
     }
   }, [entries.length, flatRows.length, loadMore, loading, total, virtualItems]);
 
+  useEffect(() => {
+    if (typeof initialScrollTop !== "number") {
+      return;
+    }
+    const element = parentRef.current;
+    if (!element) {
+      return;
+    }
+    element.scrollTop = Math.max(0, initialScrollTop);
+  }, [initialScrollTop]);
+
+  useEffect(() => {
+    if (restoreScrollTop === null || restoreScrollTop === undefined) {
+      return;
+    }
+    if (flatRows.length === 0) {
+      return;
+    }
+
+    const targetScrollTop = Math.max(0, restoreScrollTop);
+    let attempts = 0;
+    let frame = 0;
+
+    const applyRestore = () => {
+      const element = parentRef.current;
+      if (!element) {
+        return;
+      }
+      element.scrollTop = targetScrollTop;
+      if (
+        Math.abs(element.scrollTop - targetScrollTop) <= 1 ||
+        attempts >= SCROLL_RESTORE_MAX_ATTEMPTS
+      ) {
+        return;
+      }
+      attempts += 1;
+      frame = window.requestAnimationFrame(applyRestore);
+    };
+
+    applyRestore();
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [flatRows.length, restoreScrollTop]);
+
   if (!loading && entries.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-on-dark">
@@ -132,7 +189,11 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
   }
 
   return (
-    <div ref={parentRef} className="h-full overflow-auto">
+    <div
+      ref={parentRef}
+      className="h-full overflow-auto"
+      onScroll={(event) => onScrollTopChange?.(event.currentTarget.scrollTop)}
+    >
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -192,7 +253,9 @@ export function HistoryView({ onPlaySong }: HistoryViewProps) {
           );
         })}
       </div>
-      {loading ? <div className="py-4 text-center text-sm text-muted-on-dark">Loading...</div> : null}
+      {loading ? (
+        <div className="py-4 text-center text-sm text-muted-on-dark">Loading...</div>
+      ) : null}
     </div>
   );
 }

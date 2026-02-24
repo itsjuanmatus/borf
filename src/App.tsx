@@ -15,6 +15,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   BarChart2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Disc3,
   Download,
@@ -33,7 +35,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { SongArtwork } from "./components/song-artwork";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
-import { TooltipProvider } from "./components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 import { HistoryView } from "./features/history/HistoryView";
 import { usePlayTracking } from "./features/history/usePlayTracking";
 import { type ImportWizardStep, ItunesImportWizard } from "./features/import/ItunesImportWizard";
@@ -85,10 +87,135 @@ const SONG_ROW_HEIGHT = 54;
 const SEARCH_DEBOUNCE_MS = 320;
 const SEARCH_MIN_TEXT_LENGTH = 2;
 const SEARCH_RESULT_LIMIT = 20;
+const MAX_NAVIGATION_HISTORY = 100;
+const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
 const PERF_TRACE_ENABLED = (() => {
   const rawValue = String(import.meta.env.VITE_PERF_TRACE ?? "").toLowerCase();
   return rawValue === "1" || rawValue === "true" || rawValue === "yes";
 })();
+
+type AlbumIdentity = Pick<AlbumListItem, "album" | "album_artist">;
+
+type NavigationRoute =
+  | { kind: "songs" }
+  | { kind: "albums-list" }
+  | { kind: "albums-detail"; album: AlbumIdentity }
+  | { kind: "artists-list" }
+  | { kind: "artists-detail"; artist: string }
+  | { kind: "artists-album-detail"; artist: string; album: AlbumIdentity }
+  | { kind: "playlist"; playlistId: string }
+  | { kind: "history" }
+  | { kind: "stats" }
+  | { kind: "settings" };
+
+type NavigationScrollPositions = Record<string, number>;
+
+interface NavigationSnapshot {
+  route: NavigationRoute;
+  searchQuery: string;
+  selectedTagFilterIds: string[];
+  playlistReorderMode: boolean;
+  upNextOpen: boolean;
+  scrollByRoute: NavigationScrollPositions;
+}
+
+function cloneAlbumIdentity(album: AlbumIdentity): AlbumIdentity {
+  return {
+    album: album.album,
+    album_artist: album.album_artist,
+  };
+}
+
+function normalizeTagFilterIds(values: string[]) {
+  return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeScrollPosition(value: number) {
+  if (!Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+  return Math.round(value);
+}
+
+function isSameAlbumIdentity(left: AlbumIdentity, right: AlbumIdentity) {
+  return left.album === right.album && left.album_artist === right.album_artist;
+}
+
+function navigationRouteKey(route: NavigationRoute) {
+  switch (route.kind) {
+    case "songs":
+      return "songs";
+    case "albums-list":
+      return "albums-list";
+    case "albums-detail":
+      return `albums-detail:${encodeURIComponent(route.album.album)}:${encodeURIComponent(route.album.album_artist)}`;
+    case "artists-list":
+      return "artists-list";
+    case "artists-detail":
+      return `artists-detail:${encodeURIComponent(route.artist)}`;
+    case "artists-album-detail":
+      return `artists-album-detail:${encodeURIComponent(route.artist)}:${encodeURIComponent(route.album.album)}:${encodeURIComponent(route.album.album_artist)}`;
+    case "playlist":
+      return `playlist:${route.playlistId}`;
+    case "history":
+      return "history";
+    case "stats":
+      return "stats";
+    case "settings":
+      return "settings";
+    default:
+      throw new Error(`Unhandled route kind: ${(route as { kind: string }).kind}`);
+  }
+}
+
+function navigationRoutesEqual(left: NavigationRoute, right: NavigationRoute) {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+
+  switch (left.kind) {
+    case "songs":
+    case "albums-list":
+    case "artists-list":
+    case "history":
+    case "stats":
+    case "settings":
+      return true;
+    case "albums-detail":
+      return isSameAlbumIdentity(
+        left.album,
+        (right as Extract<NavigationRoute, { kind: "albums-detail" }>).album,
+      );
+    case "artists-detail":
+      return left.artist === (right as Extract<NavigationRoute, { kind: "artists-detail" }>).artist;
+    case "artists-album-detail":
+      return (
+        left.artist ===
+          (right as Extract<NavigationRoute, { kind: "artists-album-detail" }>).artist &&
+        isSameAlbumIdentity(
+          left.album,
+          (right as Extract<NavigationRoute, { kind: "artists-album-detail" }>).album,
+        )
+      );
+    case "playlist":
+      return (
+        left.playlistId === (right as Extract<NavigationRoute, { kind: "playlist" }>).playlistId
+      );
+    default:
+      return false;
+  }
+}
+
+function navigationSnapshotsEqual(left: NavigationSnapshot, right: NavigationSnapshot) {
+  return (
+    navigationRoutesEqual(left.route, right.route) &&
+    left.searchQuery === right.searchQuery &&
+    left.playlistReorderMode === right.playlistReorderMode &&
+    left.upNextOpen === right.upNextOpen &&
+    left.selectedTagFilterIds.length === right.selectedTagFilterIds.length &&
+    left.selectedTagFilterIds.every((tagId, index) => tagId === right.selectedTagFilterIds[index])
+  );
+}
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) {
@@ -314,7 +441,6 @@ function App() {
   const copySelectionToClipboard = usePlaylistStore((state) => state.copySelectionToClipboard);
   const setClipboardSongIds = usePlaylistStore((state) => state.setClipboardSongIds);
 
-
   const upNext = useQueueStore((state) => state.upNext);
   const playingFromSource = useQueueStore((state) => state.playingFromSource);
   const playingFromIndex = useQueueStore((state) => state.playingFromIndex);
@@ -335,7 +461,13 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const songsScrollRef = useRef<HTMLDivElement | null>(null);
   const albumsScrollRef = useRef<HTMLDivElement | null>(null);
+  const albumDetailScrollRef = useRef<HTMLDivElement | null>(null);
   const artistsScrollRef = useRef<HTMLDivElement | null>(null);
+  const artistAlbumsScrollRef = useRef<HTMLDivElement | null>(null);
+  const artistAlbumTracksScrollRef = useRef<HTMLDivElement | null>(null);
+  const playlistFolderScrollRef = useRef<HTMLDivElement | null>(null);
+  const statsScrollRef = useRef<HTMLDivElement | null>(null);
+  const settingsScrollRef = useRef<HTMLDivElement | null>(null);
   const tagFilterMenuRootRef = useRef<HTMLDivElement | null>(null);
   const watcherRefreshTimeoutRef = useRef<number | null>(null);
   const activePlaylistRequestIdRef = useRef(0);
@@ -348,6 +480,14 @@ function App() {
   const pendingSearchRef = useRef<{ token: number; query: string; tagIds: string[] } | null>(null);
   const latestSearchTokenRef = useRef(0);
   const searchLoopMountedRef = useRef(true);
+  const scrollPositionsRef = useRef<NavigationScrollPositions>({});
+  const pendingScrollRestoreRef = useRef<{
+    route: NavigationRoute;
+    scrollByRoute: NavigationScrollPositions;
+  } | null>(null);
+  const isApplyingHistoryRef = useRef(false);
+  const pastStackRef = useRef<NavigationSnapshot[]>([]);
+  const futureStackRef = useRef<NavigationSnapshot[]>([]);
 
   const [albumGridWidth, setAlbumGridWidth] = useState(920);
   const [playlistReorderMode, setPlaylistReorderMode] = useState(false);
@@ -356,6 +496,11 @@ function App() {
     Record<string, string[]>
   >({});
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
+  const [pastStack, setPastStack] = useState<NavigationSnapshot[]>([]);
+  const [futureStack, setFutureStack] = useState<NavigationSnapshot[]>([]);
+  const [playlistRestoreScrollTop, setPlaylistRestoreScrollTop] = useState<number | null>(null);
+  const [historyRestoreScrollTop, setHistoryRestoreScrollTop] = useState<number | null>(null);
+  const [scrollRestoreTick, setScrollRestoreTick] = useState(0);
 
   const { onSongStarted, onPositionUpdate, onPaused, onResumed, onTrackEnded } = usePlayTracking();
   const triggerStatsRefresh = useCallback(() => {
@@ -792,14 +937,14 @@ function App() {
       if (!isPlaybackRequestCurrent(activeToken)) {
         return;
       }
+      setNowPlaying(song);
+      setPlaybackState("playing");
+      setPosition(startMs ?? song.custom_start_ms ?? 0, song.duration_ms);
       perfPlayRequestRef.current = { songId: song.id, startedAt: performance.now() };
       await audioApi.play(song.id, startMs);
       if (!isPlaybackRequestCurrent(activeToken, song.id)) {
         return;
       }
-      setNowPlaying(song);
-      setPlaybackState("playing");
-      setPosition(startMs ?? song.custom_start_ms ?? 0, song.duration_ms);
       onSongStarted(song);
       triggerStatsRefresh();
     },
@@ -983,21 +1128,48 @@ function App() {
     setPlaybackState("paused");
   }, [setPlaybackState]);
 
-  const openAlbum = useCallback(async (album: AlbumListItem) => {
-    setSelectedAlbum(album);
-    setLoadingAlbumTracks(true);
-    setAlbumTracks([]);
+  const openAlbum = useCallback(
+    async (album: AlbumIdentity, options?: { allowToggle?: boolean }) => {
+      const allowToggle = options?.allowToggle ?? true;
+      if (
+        allowToggle &&
+        selectedAlbum &&
+        selectedAlbum.album === album.album &&
+        selectedAlbum.album_artist === album.album_artist
+      ) {
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        return;
+      }
 
-    try {
-      const tracks = await libraryApi.getAlbumTracks({
+      const resolvedAlbum = albums.find(
+        (entry) => entry.album === album.album && entry.album_artist === album.album_artist,
+      ) ?? {
         album: album.album,
-        albumArtist: album.album_artist,
-      });
-      setAlbumTracks(tracks);
-    } finally {
-      setLoadingAlbumTracks(false);
-    }
-  }, []);
+        album_artist: album.album_artist,
+        song_count: 0,
+        total_duration_ms: 0,
+        artwork_path: null,
+        year: null,
+        date_added: null,
+      };
+
+      setSelectedAlbum(resolvedAlbum);
+      setLoadingAlbumTracks(true);
+      setAlbumTracks([]);
+
+      try {
+        const tracks = await libraryApi.getAlbumTracks({
+          album: album.album,
+          albumArtist: album.album_artist,
+        });
+        setAlbumTracks(tracks);
+      } finally {
+        setLoadingAlbumTracks(false);
+      }
+    },
+    [albums, selectedAlbum],
+  );
 
   const openArtist = useCallback(async (artist: string) => {
     setSelectedArtist(artist);
@@ -1013,21 +1185,36 @@ function App() {
     }
   }, []);
 
-  const openArtistAlbum = useCallback(async (album: AlbumListItem) => {
-    setSelectedArtistAlbum(album);
-    setLoadingArtistAlbumTracks(true);
-    setArtistAlbumTracks([]);
-
-    try {
-      const tracks = await libraryApi.getAlbumTracks({
+  const openArtistAlbum = useCallback(
+    async (album: AlbumIdentity) => {
+      const resolvedAlbum = artistAlbums.find(
+        (entry) => entry.album === album.album && entry.album_artist === album.album_artist,
+      ) ?? {
         album: album.album,
-        albumArtist: album.album_artist,
-      });
-      setArtistAlbumTracks(tracks);
-    } finally {
-      setLoadingArtistAlbumTracks(false);
-    }
-  }, []);
+        album_artist: album.album_artist,
+        song_count: 0,
+        total_duration_ms: 0,
+        artwork_path: null,
+        year: null,
+        date_added: null,
+      };
+
+      setSelectedArtistAlbum(resolvedAlbum);
+      setLoadingArtistAlbumTracks(true);
+      setArtistAlbumTracks([]);
+
+      try {
+        const tracks = await libraryApi.getAlbumTracks({
+          album: album.album,
+          albumArtist: album.album_artist,
+        });
+        setArtistAlbumTracks(tracks);
+      } finally {
+        setLoadingArtistAlbumTracks(false);
+      }
+    },
+    [artistAlbums],
+  );
 
   const refreshPlaylists = useCallback(async () => {
     const result = await playlistApi.list();
@@ -1187,18 +1374,470 @@ function App() {
   );
 
   const openPlaylist = useCallback(
-    (playlistId: string) => {
+    (
+      playlistId: string,
+      options?: {
+        clearSelection?: boolean;
+        reorderMode?: boolean;
+      },
+    ) => {
       const startedAt = performance.now();
       perfViewSwitchRef.current = { view: "playlist", startedAt };
       perfPlaylistOpenRef.current = { playlistId, startedAt };
-      setPlaylistReorderMode(false);
+      setPlaylistReorderMode(options?.reorderMode ?? false);
       setActiveView("playlist");
       setActivePlaylistId(playlistId);
       setSelectedAlbum(null);
       setSelectedArtist(null);
-      clearSelection();
+      setSelectedArtistAlbum(null);
+      if (options?.clearSelection ?? true) {
+        clearSelection();
+      }
     },
     [clearSelection, setActivePlaylistId, setActiveView],
+  );
+
+  const currentRoute = useMemo<NavigationRoute>(() => {
+    if (activeView === "songs") {
+      return { kind: "songs" };
+    }
+
+    if (activeView === "albums") {
+      if (selectedAlbum) {
+        return {
+          kind: "albums-detail",
+          album: cloneAlbumIdentity(selectedAlbum),
+        };
+      }
+      return { kind: "albums-list" };
+    }
+
+    if (activeView === "artists") {
+      if (selectedArtist && selectedArtistAlbum) {
+        return {
+          kind: "artists-album-detail",
+          artist: selectedArtist,
+          album: cloneAlbumIdentity(selectedArtistAlbum),
+        };
+      }
+      if (selectedArtist) {
+        return {
+          kind: "artists-detail",
+          artist: selectedArtist,
+        };
+      }
+      return { kind: "artists-list" };
+    }
+
+    if (activeView === "playlist" && activePlaylistId) {
+      return {
+        kind: "playlist",
+        playlistId: activePlaylistId,
+      };
+    }
+
+    if (activeView === "history") {
+      return { kind: "history" };
+    }
+
+    if (activeView === "stats") {
+      return { kind: "stats" };
+    }
+
+    if (activeView === "settings") {
+      return { kind: "settings" };
+    }
+
+    return { kind: "songs" };
+  }, [activePlaylistId, activeView, selectedAlbum, selectedArtist, selectedArtistAlbum]);
+  const currentRouteKey = useMemo(() => navigationRouteKey(currentRoute), [currentRoute]);
+
+  const setPastStackWithRef = useCallback((next: NavigationSnapshot[]) => {
+    pastStackRef.current = next;
+    setPastStack(next);
+  }, []);
+
+  const setFutureStackWithRef = useCallback((next: NavigationSnapshot[]) => {
+    futureStackRef.current = next;
+    setFutureStack(next);
+  }, []);
+
+  const resolveScrollElementForRoute = useCallback(
+    (route: NavigationRoute) => {
+      switch (route.kind) {
+        case "songs":
+          return songsScrollRef.current;
+        case "albums-list":
+          return albumsScrollRef.current;
+        case "albums-detail":
+          return albumDetailScrollRef.current;
+        case "artists-list":
+          return artistsScrollRef.current;
+        case "artists-detail":
+          return artistAlbumsScrollRef.current;
+        case "artists-album-detail":
+          return artistAlbumTracksScrollRef.current;
+        case "playlist":
+          if (activePlaylistId !== route.playlistId) {
+            return null;
+          }
+          if (activePlaylist?.is_folder) {
+            return playlistFolderScrollRef.current;
+          }
+          return null;
+        case "stats":
+          return statsScrollRef.current;
+        case "settings":
+          return settingsScrollRef.current;
+        case "history":
+          return null;
+        default:
+          return null;
+      }
+    },
+    [activePlaylist?.is_folder, activePlaylistId],
+  );
+
+  const recordScrollPositionForRoute = useCallback((route: NavigationRoute, scrollTop: number) => {
+    const key = navigationRouteKey(route);
+    scrollPositionsRef.current[key] = normalizeScrollPosition(scrollTop);
+  }, []);
+
+  const syncScrollPositionForRoute = useCallback(
+    (route: NavigationRoute) => {
+      const element = resolveScrollElementForRoute(route);
+      if (!element) {
+        return;
+      }
+      recordScrollPositionForRoute(route, element.scrollTop);
+    },
+    [recordScrollPositionForRoute, resolveScrollElementForRoute],
+  );
+
+  const createSnapshotForRoute = useCallback(
+    (
+      route: NavigationRoute,
+      overrides?: Partial<
+        Pick<
+          NavigationSnapshot,
+          "searchQuery" | "selectedTagFilterIds" | "playlistReorderMode" | "upNextOpen"
+        >
+      >,
+    ): NavigationSnapshot => {
+      const routeKey = navigationRouteKey(route);
+      const normalizedTagIds = normalizeTagFilterIds(
+        overrides?.selectedTagFilterIds ?? selectedTagFilterIds,
+      );
+      const snapshot: NavigationSnapshot = {
+        route,
+        searchQuery: overrides?.searchQuery ?? searchQuery,
+        selectedTagFilterIds: normalizedTagIds,
+        playlistReorderMode:
+          overrides?.playlistReorderMode ??
+          (route.kind === "playlist" ? playlistReorderMode : false),
+        upNextOpen: overrides?.upNextOpen ?? upNextOpen,
+        scrollByRoute: {
+          ...scrollPositionsRef.current,
+        },
+      };
+      if (snapshot.scrollByRoute[routeKey] === undefined) {
+        snapshot.scrollByRoute[routeKey] = 0;
+      }
+      return snapshot;
+    },
+    [playlistReorderMode, searchQuery, selectedTagFilterIds, upNextOpen],
+  );
+
+  const captureCurrentSnapshot = useCallback(() => {
+    syncScrollPositionForRoute(currentRoute);
+    return createSnapshotForRoute(currentRoute);
+  }, [createSnapshotForRoute, currentRoute, syncScrollPositionForRoute]);
+
+  const applyRoute = useCallback(
+    async (route: NavigationRoute) => {
+      if (route.kind === "songs") {
+        perfViewSwitchRef.current = { view: "songs", startedAt: performance.now() };
+        setActiveView("songs");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        clearSelection();
+        return;
+      }
+
+      if (route.kind === "albums-list") {
+        perfViewSwitchRef.current = { view: "albums", startedAt: performance.now() };
+        setActiveView("albums");
+        setActivePlaylistId(null);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        clearSelection();
+        return;
+      }
+
+      if (route.kind === "albums-detail") {
+        perfViewSwitchRef.current = { view: "albums", startedAt: performance.now() };
+        setActiveView("albums");
+        setActivePlaylistId(null);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        clearSelection();
+        await openAlbum(route.album, { allowToggle: false });
+        return;
+      }
+
+      if (route.kind === "artists-list") {
+        perfViewSwitchRef.current = { view: "artists", startedAt: performance.now() };
+        setActiveView("artists");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        clearSelection();
+        return;
+      }
+
+      if (route.kind === "artists-detail") {
+        perfViewSwitchRef.current = { view: "artists", startedAt: performance.now() };
+        setActiveView("artists");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        clearSelection();
+        await openArtist(route.artist);
+        return;
+      }
+
+      if (route.kind === "artists-album-detail") {
+        perfViewSwitchRef.current = { view: "artists", startedAt: performance.now() };
+        setActiveView("artists");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        clearSelection();
+        await openArtist(route.artist);
+        await openArtistAlbum(route.album);
+        return;
+      }
+
+      if (route.kind === "playlist") {
+        openPlaylist(route.playlistId, {
+          clearSelection: true,
+          reorderMode: false,
+        });
+        return;
+      }
+
+      if (route.kind === "settings") {
+        perfViewSwitchRef.current = { view: "settings", startedAt: performance.now() };
+        setActiveView("settings");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        clearSelection();
+        return;
+      }
+
+      if (route.kind === "history") {
+        setActiveView("history");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        clearSelection();
+        return;
+      }
+
+      if (route.kind === "stats") {
+        setActiveView("stats");
+        setActivePlaylistId(null);
+        setSelectedAlbum(null);
+        setAlbumTracks([]);
+        setSelectedArtist(null);
+        setSelectedArtistAlbum(null);
+        setArtistAlbums([]);
+        setArtistAlbumTracks([]);
+        clearSelection();
+      }
+    },
+    [
+      clearSelection,
+      openAlbum,
+      openArtist,
+      openArtistAlbum,
+      openPlaylist,
+      setActivePlaylistId,
+      setActiveView,
+    ],
+  );
+
+  const applySnapshot = useCallback(
+    async (snapshot: NavigationSnapshot, options?: { fromHistory?: boolean }) => {
+      const fromHistory = options?.fromHistory ?? false;
+      isApplyingHistoryRef.current = fromHistory;
+      try {
+        setSearchQuery(snapshot.searchQuery);
+        setSelectedTagFilterIds(normalizeTagFilterIds(snapshot.selectedTagFilterIds));
+        if (snapshot.upNextOpen) {
+          openUpNext();
+        } else {
+          closeUpNext();
+        }
+
+        await applyRoute(snapshot.route);
+
+        if (snapshot.route.kind === "playlist") {
+          setPlaylistReorderMode(snapshot.playlistReorderMode);
+          const playlistKey = navigationRouteKey(snapshot.route);
+          setPlaylistRestoreScrollTop(snapshot.scrollByRoute[playlistKey] ?? 0);
+        } else {
+          setPlaylistReorderMode(false);
+          setPlaylistRestoreScrollTop(null);
+        }
+
+        if (snapshot.route.kind === "history") {
+          const historyKey = navigationRouteKey(snapshot.route);
+          setHistoryRestoreScrollTop(snapshot.scrollByRoute[historyKey] ?? 0);
+        } else {
+          setHistoryRestoreScrollTop(null);
+        }
+
+        pendingScrollRestoreRef.current = {
+          route: snapshot.route,
+          scrollByRoute: {
+            ...snapshot.scrollByRoute,
+          },
+        };
+        setScrollRestoreTick((previous) => previous + 1);
+      } catch (error: unknown) {
+        setErrorMessage(String(error));
+      } finally {
+        if (fromHistory) {
+          isApplyingHistoryRef.current = false;
+        }
+      }
+    },
+    [applyRoute, closeUpNext, openUpNext],
+  );
+
+  const pushHistoryForExplicitNav = useCallback(
+    (nextSnapshot: NavigationSnapshot) => {
+      const currentSnapshot = captureCurrentSnapshot();
+      if (navigationSnapshotsEqual(currentSnapshot, nextSnapshot)) {
+        return false;
+      }
+
+      const nextPast = [...pastStackRef.current];
+      if (
+        nextPast.length === 0 ||
+        !navigationSnapshotsEqual(nextPast[nextPast.length - 1], currentSnapshot)
+      ) {
+        nextPast.push(currentSnapshot);
+      }
+      if (nextPast.length > MAX_NAVIGATION_HISTORY) {
+        nextPast.splice(0, nextPast.length - MAX_NAVIGATION_HISTORY);
+      }
+      setPastStackWithRef(nextPast);
+      setFutureStackWithRef([]);
+      return true;
+    },
+    [captureCurrentSnapshot, setFutureStackWithRef, setPastStackWithRef],
+  );
+
+  const navigateExplicit = useCallback(
+    (nextSnapshot: NavigationSnapshot) => {
+      if (isApplyingHistoryRef.current) {
+        return;
+      }
+      const didPush = pushHistoryForExplicitNav(nextSnapshot);
+      if (!didPush) {
+        return;
+      }
+      void applySnapshot(nextSnapshot);
+    },
+    [applySnapshot, pushHistoryForExplicitNav],
+  );
+
+  const goBack = useCallback(() => {
+    if (isApplyingHistoryRef.current) {
+      return;
+    }
+
+    const previousStack = pastStackRef.current;
+    if (previousStack.length === 0) {
+      return;
+    }
+
+    const currentSnapshot = captureCurrentSnapshot();
+    const targetSnapshot = previousStack[previousStack.length - 1];
+    const nextPast = previousStack.slice(0, -1);
+    const nextFuture = [currentSnapshot, ...futureStackRef.current];
+    if (nextFuture.length > MAX_NAVIGATION_HISTORY) {
+      nextFuture.splice(MAX_NAVIGATION_HISTORY);
+    }
+
+    setPastStackWithRef(nextPast);
+    setFutureStackWithRef(nextFuture);
+    void applySnapshot(targetSnapshot, { fromHistory: true });
+  }, [applySnapshot, captureCurrentSnapshot, setFutureStackWithRef, setPastStackWithRef]);
+
+  const goForward = useCallback(() => {
+    if (isApplyingHistoryRef.current) {
+      return;
+    }
+
+    const nextStack = futureStackRef.current;
+    if (nextStack.length === 0) {
+      return;
+    }
+
+    const currentSnapshot = captureCurrentSnapshot();
+    const targetSnapshot = nextStack[0];
+    const remainingForward = nextStack.slice(1);
+    const nextPast = [...pastStackRef.current, currentSnapshot];
+    if (nextPast.length > MAX_NAVIGATION_HISTORY) {
+      nextPast.splice(0, nextPast.length - MAX_NAVIGATION_HISTORY);
+    }
+
+    setFutureStackWithRef(remainingForward);
+    setPastStackWithRef(nextPast);
+    void applySnapshot(targetSnapshot, { fromHistory: true });
+  }, [applySnapshot, captureCurrentSnapshot, setFutureStackWithRef, setPastStackWithRef]);
+
+  const navigateToRoute = useCallback(
+    (
+      route: NavigationRoute,
+      overrides?: Partial<
+        Pick<
+          NavigationSnapshot,
+          "searchQuery" | "selectedTagFilterIds" | "playlistReorderMode" | "upNextOpen"
+        >
+      >,
+    ) => {
+      const nextSnapshot = createSnapshotForRoute(route, overrides);
+      navigateExplicit(nextSnapshot);
+    },
+    [createSnapshotForRoute, navigateExplicit],
   );
 
   const handleCreatePlaylist = useCallback(
@@ -1217,13 +1856,19 @@ function App() {
         });
         await refreshPlaylists();
         if (!created.is_folder) {
-          openPlaylist(created.id);
+          navigateToRoute(
+            {
+              kind: "playlist",
+              playlistId: created.id,
+            },
+            { playlistReorderMode: false },
+          );
         }
       } catch (error: unknown) {
         setErrorMessage(String(error));
       }
     },
-    [openPlaylist, refreshPlaylists],
+    [navigateToRoute, refreshPlaylists],
   );
 
   const handleRenamePlaylist = useCallback(
@@ -1286,12 +1931,18 @@ function App() {
         const duplicated = await playlistApi.duplicate(playlist.id);
         invalidatePlaylistsCache([duplicated.id]);
         await refreshPlaylists();
-        openPlaylist(duplicated.id);
+        navigateToRoute(
+          {
+            kind: "playlist",
+            playlistId: duplicated.id,
+          },
+          { playlistReorderMode: false },
+        );
       } catch (error: unknown) {
         setErrorMessage(String(error));
       }
     },
-    [invalidatePlaylistsCache, openPlaylist, refreshPlaylists],
+    [invalidatePlaylistsCache, navigateToRoute, refreshPlaylists],
   );
 
   const handleExportPlaylistM3u8 = useCallback(async (playlist: PlaylistNode) => {
@@ -2432,6 +3083,12 @@ function App() {
       const hasModifier = event.metaKey || event.ctrlKey;
       const lowerKey = event.key.toLowerCase();
       const inEditableTarget = isEditableKeyboardTarget(event.target);
+      const isBackShortcut =
+        (event.altKey && event.key === "ArrowLeft") ||
+        (hasModifier && !event.shiftKey && event.key === "[");
+      const isForwardShortcut =
+        (event.altKey && event.key === "ArrowRight") ||
+        (hasModifier && !event.shiftKey && event.key === "]");
 
       if (hasModifier && lowerKey === "k") {
         event.preventDefault();
@@ -2440,12 +3097,28 @@ function App() {
         return;
       }
 
-      if (!hasModifier && event.key === "Escape") {
+      if (!hasModifier && !event.altKey && event.key === "Escape") {
         closeUpNext();
         return;
       }
 
-      if (!hasModifier || inEditableTarget) {
+      if (inEditableTarget) {
+        return;
+      }
+
+      if (isBackShortcut) {
+        event.preventDefault();
+        goBack();
+        return;
+      }
+
+      if (isForwardShortcut) {
+        event.preventDefault();
+        goForward();
+        return;
+      }
+
+      if (!hasModifier) {
         return;
       }
 
@@ -2505,6 +3178,8 @@ function App() {
     clipboardSongIds,
     closeUpNext,
     copySelectionToClipboard,
+    goBack,
+    goForward,
     refreshPlaylistTracks,
     selectedSongIds.length,
   ]);
@@ -2545,6 +3220,68 @@ function App() {
       window.removeEventListener("mousedown", close);
     };
   }, [showTagFilterMenu]);
+
+  useEffect(() => {
+    if (scrollRestoreTick < 0) {
+      return;
+    }
+
+    const pending = pendingScrollRestoreRef.current;
+    if (!pending) {
+      return;
+    }
+
+    const pendingRouteKey = navigationRouteKey(pending.route);
+    if (pendingRouteKey !== currentRouteKey) {
+      return;
+    }
+
+    if (pending.route.kind === "history") {
+      pendingScrollRestoreRef.current = null;
+      return;
+    }
+
+    if (pending.route.kind === "playlist" && !activePlaylist?.is_folder) {
+      pendingScrollRestoreRef.current = null;
+      return;
+    }
+
+    const targetScrollTop = normalizeScrollPosition(pending.scrollByRoute[pendingRouteKey] ?? 0);
+    let attempts = 0;
+    let frame = 0;
+
+    const applyRestore = () => {
+      const element = resolveScrollElementForRoute(pending.route);
+      if (!element) {
+        if (attempts >= SCROLL_RESTORE_MAX_ATTEMPTS) {
+          pendingScrollRestoreRef.current = null;
+          return;
+        }
+        attempts += 1;
+        frame = window.requestAnimationFrame(applyRestore);
+        return;
+      }
+
+      element.scrollTop = targetScrollTop;
+      if (
+        Math.abs(element.scrollTop - targetScrollTop) <= 1 ||
+        attempts >= SCROLL_RESTORE_MAX_ATTEMPTS
+      ) {
+        pendingScrollRestoreRef.current = null;
+        return;
+      }
+
+      attempts += 1;
+      frame = window.requestAnimationFrame(applyRestore);
+    };
+
+    frame = window.requestAnimationFrame(applyRestore);
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [activePlaylist?.is_folder, currentRouteKey, resolveScrollElementForRoute, scrollRestoreTick]);
 
   const progressPercent = useMemo(() => {
     if (!scanProgress || scanProgress.total === 0) {
@@ -2605,6 +3342,11 @@ function App() {
                 .setVolume(nextVolume)
                 .catch((error: unknown) => setErrorMessage(String(error)));
             }}
+            onVolumeScrub={(nextVolume) => {
+              void audioApi
+                .setVolume(nextVolume)
+                .catch((error: unknown) => setErrorMessage(String(error)));
+            }}
           />
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <Group orientation="horizontal" className="h-full w-full">
@@ -2623,12 +3365,16 @@ function App() {
                     </div>
                     <div>
                       <h1 className="text-lg font-semibold tracking-tight text-cloud">borf</h1>
-                      <p className="text-xs text-muted-on-dark">Phase 4 metadata + tags + auto-sync</p>
+                      <p className="text-xs text-muted-on-dark">
+                        Phase 4 metadata + tags + auto-sync
+                      </p>
                     </div>
                   </div>
 
                   <div className="mt-6 space-y-1 text-sm">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">Library</p>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+                      Library
+                    </p>
 
                     <button
                       type="button"
@@ -2639,13 +3385,7 @@ function App() {
                           : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
-                        perfViewSwitchRef.current = { view: "songs", startedAt: performance.now() };
-                        setPlaylistReorderMode(false);
-                        setActiveView("songs");
-                        setActivePlaylistId(null);
-                        clearSelection();
-                        setSelectedAlbum(null);
-                        setSelectedArtist(null);
+                        navigateToRoute({ kind: "songs" });
                       }}
                     >
                       <Library className="h-4 w-4" />
@@ -2661,15 +3401,7 @@ function App() {
                           : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
-                        perfViewSwitchRef.current = {
-                          view: "albums",
-                          startedAt: performance.now(),
-                        };
-                        setPlaylistReorderMode(false);
-                        setActiveView("albums");
-                        setActivePlaylistId(null);
-                        clearSelection();
-                        setSelectedArtist(null);
+                        navigateToRoute({ kind: "albums-list" });
                       }}
                     >
                       <Disc3 className="h-4 w-4" />
@@ -2685,15 +3417,7 @@ function App() {
                           : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
-                        perfViewSwitchRef.current = {
-                          view: "artists",
-                          startedAt: performance.now(),
-                        };
-                        setPlaylistReorderMode(false);
-                        setActiveView("artists");
-                        setActivePlaylistId(null);
-                        clearSelection();
-                        setSelectedAlbum(null);
+                        navigateToRoute({ kind: "artists-list" });
                       }}
                     >
                       <UserRound className="h-4 w-4" />
@@ -2709,16 +3433,7 @@ function App() {
                           : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
-                        perfViewSwitchRef.current = {
-                          view: "settings",
-                          startedAt: performance.now(),
-                        };
-                        setPlaylistReorderMode(false);
-                        setActiveView("settings");
-                        setActivePlaylistId(null);
-                        clearSelection();
-                        setSelectedAlbum(null);
-                        setSelectedArtist(null);
+                        navigateToRoute({ kind: "settings" });
                       }}
                     >
                       <Settings2 className="h-4 w-4" />
@@ -2734,12 +3449,7 @@ function App() {
                           : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
-                        setPlaylistReorderMode(false);
-                        setActiveView("history");
-                        setActivePlaylistId(null);
-                        clearSelection();
-                        setSelectedAlbum(null);
-                        setSelectedArtist(null);
+                        navigateToRoute({ kind: "history" });
                       }}
                     >
                       <Clock3 className="h-4 w-4" />
@@ -2755,12 +3465,7 @@ function App() {
                           : "text-muted-on-dark hover:bg-cloud/8",
                       )}
                       onClick={() => {
-                        setPlaylistReorderMode(false);
-                        setActiveView("stats");
-                        setActivePlaylistId(null);
-                        clearSelection();
-                        setSelectedAlbum(null);
-                        setSelectedArtist(null);
+                        navigateToRoute({ kind: "stats" });
                       }}
                     >
                       <BarChart2 className="h-4 w-4" />
@@ -2772,7 +3477,13 @@ function App() {
                     playlists={playlists}
                     activePlaylistId={activePlaylistId}
                     onSelectPlaylist={(playlistId) => {
-                      void openPlaylist(playlistId);
+                      navigateToRoute(
+                        {
+                          kind: "playlist",
+                          playlistId,
+                        },
+                        { playlistReorderMode: false },
+                      );
                     }}
                     onCreatePlaylist={(parentId) => {
                       void handleCreatePlaylist(parentId, false);
@@ -2828,39 +3539,73 @@ function App() {
                 <main className="flex h-full min-h-0 flex-col bg-surface-dark">
                   <header className="relative px-6 py-4">
                     <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <h2 className="text-base font-semibold tracking-tight text-cloud">
-                          {activeView === "songs"
-                            ? "Songs"
-                            : activeView === "albums"
-                              ? "Albums"
-                              : activeView === "artists"
-                                ? "Artists"
-                                : activeView === "history"
-                                  ? "History"
-                                  : activeView === "stats"
-                                    ? "Stats"
-                                    : activeView === "settings"
-                                      ? "Settings"
-                                      : (activePlaylist?.name ?? "Playlist")}
-                        </h2>
-                        <p className="text-sm text-muted-on-dark">
-                          {activeView === "songs"
-                            ? `${songCount.toLocaleString()} songs`
-                            : activeView === "albums"
-                              ? `${albums.length.toLocaleString()} albums`
-                              : activeView === "artists"
-                                ? `${artists.length.toLocaleString()} artists`
-                                : activeView === "history"
-                                  ? "Recent plays"
-                                  : activeView === "stats"
-                                    ? "Listening statistics"
-                                    : activeView === "settings"
-                                      ? `${tags.length.toLocaleString()} tags`
-                                      : activePlaylist?.is_folder
-                                        ? `${activeFolderChildren.length.toLocaleString()} item(s)`
-                                        : `${activePlaylistTrackCount.toLocaleString()} songs`}
-                        </p>
+                      <div className="flex items-start gap-3">
+                        <div className="flex items-center gap-1 pt-0.5">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-on-dark hover:bg-cloud/8 hover:text-cloud"
+                                onClick={goBack}
+                                disabled={pastStack.length === 0}
+                              >
+                                <ChevronLeft className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Back (Cmd/Ctrl+[ or Alt+Left)</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-on-dark hover:bg-cloud/8 hover:text-cloud"
+                                onClick={goForward}
+                                disabled={futureStack.length === 0}
+                              >
+                                <ChevronRight className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Forward (Cmd/Ctrl+] or Alt+Right)</TooltipContent>
+                          </Tooltip>
+                        </div>
+                        <div>
+                          <h2 className="text-base font-semibold tracking-tight text-cloud">
+                            {activeView === "songs"
+                              ? "Songs"
+                              : activeView === "albums"
+                                ? "Albums"
+                                : activeView === "artists"
+                                  ? "Artists"
+                                  : activeView === "history"
+                                    ? "History"
+                                    : activeView === "stats"
+                                      ? "Stats"
+                                      : activeView === "settings"
+                                        ? "Settings"
+                                        : (activePlaylist?.name ?? "Playlist")}
+                          </h2>
+                          <p className="text-sm text-muted-on-dark">
+                            {activeView === "songs"
+                              ? `${songCount.toLocaleString()} songs`
+                              : activeView === "albums"
+                                ? `${albums.length.toLocaleString()} albums`
+                                : activeView === "artists"
+                                  ? `${artists.length.toLocaleString()} artists`
+                                  : activeView === "history"
+                                    ? "Recent plays"
+                                    : activeView === "stats"
+                                      ? "Listening statistics"
+                                      : activeView === "settings"
+                                        ? `${tags.length.toLocaleString()} tags`
+                                        : activePlaylist?.is_folder
+                                          ? `${activeFolderChildren.length.toLocaleString()} item(s)`
+                                          : `${activePlaylistTrackCount.toLocaleString()} songs`}
+                          </p>
+                        </div>
                       </div>
 
                       <div className="relative w-full max-w-xl" ref={tagFilterMenuRootRef}>
@@ -3047,17 +3792,13 @@ function App() {
                                     type="button"
                                     className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
-                                      perfViewSwitchRef.current = {
-                                        view: "albums",
-                                        startedAt: performance.now(),
-                                      };
-                                      setPlaylistReorderMode(false);
-                                      setActiveView("albums");
-                                      setActivePlaylistId(null);
-                                      void openAlbum(album).catch((error: unknown) =>
-                                        setErrorMessage(String(error)),
+                                      navigateToRoute(
+                                        {
+                                          kind: "albums-detail",
+                                          album: cloneAlbumIdentity(album),
+                                        },
+                                        { searchQuery: "" },
                                       );
-                                      setSearchQuery("");
                                     }}
                                   >
                                     <span className="truncate">
@@ -3083,17 +3824,13 @@ function App() {
                                     type="button"
                                     className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
-                                      perfViewSwitchRef.current = {
-                                        view: "artists",
-                                        startedAt: performance.now(),
-                                      };
-                                      setPlaylistReorderMode(false);
-                                      setActiveView("artists");
-                                      setActivePlaylistId(null);
-                                      void openArtist(artist.artist).catch((error: unknown) =>
-                                        setErrorMessage(String(error)),
+                                      navigateToRoute(
+                                        {
+                                          kind: "artists-detail",
+                                          artist: artist.artist,
+                                        },
+                                        { searchQuery: "" },
                                       );
-                                      setSearchQuery("");
                                     }}
                                   >
                                     <span className="truncate">{artist.artist}</span>
@@ -3116,8 +3853,13 @@ function App() {
                                     type="button"
                                     className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
-                                      openPlaylist(playlist.id);
-                                      setSearchQuery("");
+                                      navigateToRoute(
+                                        {
+                                          kind: "playlist",
+                                          playlistId: playlist.id,
+                                        },
+                                        { playlistReorderMode: false, searchQuery: "" },
+                                      );
                                     }}
                                   >
                                     <span className="truncate">
@@ -3148,8 +3890,13 @@ function App() {
                                     type="button"
                                     className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
                                     onClick={() => {
-                                      openPlaylist(folder.id);
-                                      setSearchQuery("");
+                                      navigateToRoute(
+                                        {
+                                          kind: "playlist",
+                                          playlistId: folder.id,
+                                        },
+                                        { playlistReorderMode: false, searchQuery: "" },
+                                      );
                                     }}
                                   >
                                     <span className="truncate">
@@ -3215,7 +3962,16 @@ function App() {
                           </button>
                         </div>
 
-                        <div ref={songsScrollRef} className="min-h-0 flex-1 overflow-auto">
+                        <div
+                          ref={songsScrollRef}
+                          className="min-h-0 flex-1 overflow-auto"
+                          onScroll={(event) =>
+                            recordScrollPositionForRoute(
+                              { kind: "songs" },
+                              event.currentTarget.scrollTop,
+                            )
+                          }
+                        >
                           <div
                             style={{
                               height: `${songVirtualizer.getTotalSize()}px`,
@@ -3316,7 +4072,9 @@ function App() {
                                   >
                                     {song ? (
                                       <>
-                                        <span className="text-muted-on-dark">{virtualRow.index + 1}</span>
+                                        <span className="text-muted-on-dark">
+                                          {virtualRow.index + 1}
+                                        </span>
                                         <div className="flex min-w-0 items-center gap-2">
                                           <SongArtwork
                                             artworkPath={song.artwork_path}
@@ -3351,8 +4109,12 @@ function App() {
                                             ) : null}
                                           </div>
                                         </div>
-                                        <span className="truncate text-muted-on-dark">{song.artist}</span>
-                                        <span className="truncate text-muted-on-dark">{song.album}</span>
+                                        <span className="truncate text-muted-on-dark">
+                                          {song.artist}
+                                        </span>
+                                        <span className="truncate text-muted-on-dark">
+                                          {song.album}
+                                        </span>
                                         <span className="text-right text-muted-on-dark">
                                           {formatDuration(song.duration_ms)}
                                         </span>
@@ -3362,8 +4124,12 @@ function App() {
                                       </>
                                     ) : (
                                       <>
-                                        <span className="text-muted-on-dark">{virtualRow.index + 1}</span>
-                                        <span className="col-span-5 text-muted-on-dark">Loading...</span>
+                                        <span className="text-muted-on-dark">
+                                          {virtualRow.index + 1}
+                                        </span>
+                                        <span className="col-span-5 text-muted-on-dark">
+                                          Loading...
+                                        </span>
                                       </>
                                     )}
                                   </DraggableSongButton>
@@ -3372,7 +4138,9 @@ function App() {
                             })}
 
                             {songCount === 0 ? (
-                              <p className="p-6 text-sm text-muted-on-dark">No songs to display yet.</p>
+                              <p className="p-6 text-sm text-muted-on-dark">
+                                No songs to display yet.
+                              </p>
                             ) : null}
                           </div>
                         </div>
@@ -3387,7 +4155,22 @@ function App() {
                               Folder Contents
                             </p>
                           </div>
-                          <div className="min-h-0 flex-1 overflow-auto p-2">
+                          <div
+                            ref={playlistFolderScrollRef}
+                            className="min-h-0 flex-1 overflow-auto p-2"
+                            onScroll={(event) => {
+                              if (!activePlaylistId) {
+                                return;
+                              }
+                              recordScrollPositionForRoute(
+                                {
+                                  kind: "playlist",
+                                  playlistId: activePlaylistId,
+                                },
+                                event.currentTarget.scrollTop,
+                              );
+                            }}
+                          >
                             {activeFolderChildren.length > 0 ? (
                               <div className="space-y-1">
                                 {activeFolderChildren.map((child) => (
@@ -3395,7 +4178,15 @@ function App() {
                                     key={child.id}
                                     type="button"
                                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8"
-                                    onClick={() => openPlaylist(child.id)}
+                                    onClick={() =>
+                                      navigateToRoute(
+                                        {
+                                          kind: "playlist",
+                                          playlistId: child.id,
+                                        },
+                                        { playlistReorderMode: false },
+                                      )
+                                    }
                                   >
                                     {child.is_folder ? (
                                       <Folder className="h-4 w-4 shrink-0 text-muted-on-dark" />
@@ -3458,6 +4249,29 @@ function App() {
                               source: "playlist",
                             });
                           }}
+                          initialScrollTop={
+                            activePlaylistId
+                              ? (scrollPositionsRef.current[
+                                  navigationRouteKey({
+                                    kind: "playlist",
+                                    playlistId: activePlaylistId,
+                                  })
+                                ] ?? 0)
+                              : 0
+                          }
+                          restoreScrollTop={playlistRestoreScrollTop}
+                          onScrollTopChange={(scrollTop) => {
+                            if (!activePlaylistId) {
+                              return;
+                            }
+                            recordScrollPositionForRoute(
+                              {
+                                kind: "playlist",
+                                playlistId: activePlaylistId,
+                              },
+                              scrollTop,
+                            );
+                          }}
                         />
                       )
                     ) : null}
@@ -3468,23 +4282,43 @@ function App() {
                           <div className="flex h-full min-h-0 flex-col">
                             <div className="mb-4 flex items-center justify-between">
                               <div>
-                                <h3 className="text-lg font-semibold text-cloud">{selectedAlbum.album}</h3>
-                                <p className="text-sm text-muted-on-dark">{selectedAlbum.album_artist}</p>
+                                <h3 className="text-lg font-semibold text-cloud">
+                                  {selectedAlbum.album}
+                                </h3>
+                                <p className="text-sm text-muted-on-dark">
+                                  {selectedAlbum.album_artist}
+                                </p>
                               </div>
                               <Button
                                 variant="secondary"
                                 onClick={() => {
-                                  setSelectedAlbum(null);
-                                  setAlbumTracks([]);
+                                  navigateToRoute({ kind: "albums-list" });
                                 }}
                               >
                                 Back to albums
                               </Button>
                             </div>
 
-                            <div className="min-h-0 flex-1 overflow-auto rounded-2xl bg-cloud/5">
+                            <div
+                              ref={albumDetailScrollRef}
+                              className="min-h-0 flex-1 overflow-auto rounded-2xl bg-cloud/5"
+                              onScroll={(event) => {
+                                if (!selectedAlbum) {
+                                  return;
+                                }
+                                recordScrollPositionForRoute(
+                                  {
+                                    kind: "albums-detail",
+                                    album: cloneAlbumIdentity(selectedAlbum),
+                                  },
+                                  event.currentTarget.scrollTop,
+                                );
+                              }}
+                            >
                               {loadingAlbumTracks ? (
-                                <p className="p-4 text-sm text-muted-on-dark">Loading album tracks...</p>
+                                <p className="p-4 text-sm text-muted-on-dark">
+                                  Loading album tracks...
+                                </p>
                               ) : (
                                 albumTracks.map((song, index) => (
                                   <button
@@ -3492,7 +4326,8 @@ function App() {
                                     type="button"
                                     className={cn(
                                       "group/song grid w-full select-none grid-cols-[48px_2fr_1.6fr_120px] gap-3 px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8",
-                                      currentSong?.id === song.id && "border-l-2 border-l-blossom bg-blossom/20",
+                                      currentSong?.id === song.id &&
+                                        "border-l-2 border-l-blossom bg-blossom/20",
                                     )}
                                     onDoubleClick={() => {
                                       setQueueSourceSongs(albumTracks);
@@ -3517,7 +4352,9 @@ function App() {
                                       />
                                       <span className="truncate font-medium">{song.title}</span>
                                     </div>
-                                    <span className="truncate text-muted-on-dark">{song.artist}</span>
+                                    <span className="truncate text-muted-on-dark">
+                                      {song.artist}
+                                    </span>
                                     <span className="text-right text-muted-on-dark">
                                       {formatDuration(song.duration_ms)}
                                     </span>
@@ -3527,7 +4364,16 @@ function App() {
                             </div>
                           </div>
                         ) : (
-                          <div ref={albumsScrollRef} className="h-full overflow-auto">
+                          <div
+                            ref={albumsScrollRef}
+                            className="h-full overflow-auto"
+                            onScroll={(event) =>
+                              recordScrollPositionForRoute(
+                                { kind: "albums-list" },
+                                event.currentTarget.scrollTop,
+                              )
+                            }
+                          >
                             {isLoadingAlbums ? (
                               <p className="text-sm text-muted-on-dark">Loading albums...</p>
                             ) : (
@@ -3565,15 +4411,18 @@ function App() {
                                             type="button"
                                             className="rounded-2xl bg-cloud/8 p-4 text-left transition-all hover:-translate-y-0.5 hover:bg-cloud/12"
                                             onClick={() => {
-                                              void openAlbum(album).catch((error: unknown) =>
-                                                setErrorMessage(String(error)),
-                                              );
+                                              navigateToRoute({
+                                                kind: "albums-detail",
+                                                album: cloneAlbumIdentity(album),
+                                              });
                                             }}
                                           >
                                             <div className="mb-3 flex h-32 items-center justify-center rounded-lg bg-cloud/10">
                                               <Disc3 className="h-8 w-8 text-muted-on-dark" />
                                             </div>
-                                            <p className="truncate font-medium text-cloud">{album.album}</p>
+                                            <p className="truncate font-medium text-cloud">
+                                              {album.album}
+                                            </p>
                                             <p className="truncate text-sm text-muted-on-dark">
                                               {album.album_artist}
                                             </p>
@@ -3600,6 +4449,12 @@ function App() {
                           <div
                             ref={artistsScrollRef}
                             className="h-full overflow-auto rounded-2xl"
+                            onScroll={(event) =>
+                              recordScrollPositionForRoute(
+                                { kind: "artists-list" },
+                                event.currentTarget.scrollTop,
+                              )
+                            }
                           >
                             {isLoadingArtists ? (
                               <p className="p-4 text-sm text-muted-on-dark">Loading artists...</p>
@@ -3632,9 +4487,10 @@ function App() {
                                         type="button"
                                         className="grid h-full w-full grid-cols-[2fr_120px_120px] gap-3 px-3 text-left text-sm text-cloud hover:bg-cloud/8"
                                         onClick={() => {
-                                          void openArtist(artist.artist).catch((error: unknown) =>
-                                            setErrorMessage(String(error)),
-                                          );
+                                          navigateToRoute({
+                                            kind: "artists-detail",
+                                            artist: artist.artist,
+                                          });
                                         }}
                                       >
                                         <span className="truncate font-medium">
@@ -3657,16 +4513,15 @@ function App() {
                           <div className="flex h-full min-h-0 flex-col">
                             <div className="mb-4 flex items-center justify-between">
                               <div>
-                                <h3 className="text-lg font-semibold text-cloud">{selectedArtist}</h3>
+                                <h3 className="text-lg font-semibold text-cloud">
+                                  {selectedArtist}
+                                </h3>
                                 <p className="text-sm text-muted-on-dark">Artist view</p>
                               </div>
                               <Button
                                 variant="secondary"
                                 onClick={() => {
-                                  setSelectedArtist(null);
-                                  setSelectedArtistAlbum(null);
-                                  setArtistAlbums([]);
-                                  setArtistAlbumTracks([]);
+                                  navigateToRoute({ kind: "artists-list" });
                                 }}
                               >
                                 Back to artists
@@ -3674,7 +4529,22 @@ function App() {
                             </div>
 
                             {!selectedArtistAlbum ? (
-                              <div className="min-h-0 flex-1 overflow-auto rounded-2xl p-3">
+                              <div
+                                ref={artistAlbumsScrollRef}
+                                className="min-h-0 flex-1 overflow-auto rounded-2xl p-3"
+                                onScroll={(event) => {
+                                  if (!selectedArtist) {
+                                    return;
+                                  }
+                                  recordScrollPositionForRoute(
+                                    {
+                                      kind: "artists-detail",
+                                      artist: selectedArtist,
+                                    },
+                                    event.currentTarget.scrollTop,
+                                  );
+                                }}
+                              >
                                 {loadingArtistAlbums ? (
                                   <p className="text-sm text-muted-on-dark">Loading albums...</p>
                                 ) : (
@@ -3685,12 +4555,19 @@ function App() {
                                         type="button"
                                         className="rounded-2xl bg-cloud/8 p-4 text-left transition-all hover:-translate-y-0.5 hover:bg-cloud/12"
                                         onClick={() => {
-                                          void openArtistAlbum(album).catch((error: unknown) =>
-                                            setErrorMessage(String(error)),
-                                          );
+                                          if (!selectedArtist) {
+                                            return;
+                                          }
+                                          navigateToRoute({
+                                            kind: "artists-album-detail",
+                                            artist: selectedArtist,
+                                            album: cloneAlbumIdentity(album),
+                                          });
                                         }}
                                       >
-                                        <p className="truncate font-medium text-cloud">{album.album}</p>
+                                        <p className="truncate font-medium text-cloud">
+                                          {album.album}
+                                        </p>
                                         <p className="text-sm text-muted-on-dark">
                                           {album.song_count} songs
                                         </p>
@@ -3700,10 +4577,28 @@ function App() {
                                 )}
                               </div>
                             ) : (
-                              <div className="min-h-0 flex-1 overflow-auto rounded-2xl bg-cloud/5">
+                              <div
+                                ref={artistAlbumTracksScrollRef}
+                                className="min-h-0 flex-1 overflow-auto rounded-2xl bg-cloud/5"
+                                onScroll={(event) => {
+                                  if (!selectedArtist || !selectedArtistAlbum) {
+                                    return;
+                                  }
+                                  recordScrollPositionForRoute(
+                                    {
+                                      kind: "artists-album-detail",
+                                      artist: selectedArtist,
+                                      album: cloneAlbumIdentity(selectedArtistAlbum),
+                                    },
+                                    event.currentTarget.scrollTop,
+                                  );
+                                }}
+                              >
                                 <div className="flex items-center justify-between px-3 py-2">
                                   <div>
-                                    <p className="font-medium text-cloud">{selectedArtistAlbum.album}</p>
+                                    <p className="font-medium text-cloud">
+                                      {selectedArtistAlbum.album}
+                                    </p>
                                     <p className="text-xs text-muted-on-dark">
                                       {selectedArtistAlbum.album_artist}
                                     </p>
@@ -3711,8 +4606,13 @@ function App() {
                                   <Button
                                     variant="secondary"
                                     onClick={() => {
-                                      setSelectedArtistAlbum(null);
-                                      setArtistAlbumTracks([]);
+                                      if (!selectedArtist) {
+                                        return;
+                                      }
+                                      navigateToRoute({
+                                        kind: "artists-detail",
+                                        artist: selectedArtist,
+                                      });
                                     }}
                                   >
                                     Back to artist albums
@@ -3720,7 +4620,9 @@ function App() {
                                 </div>
 
                                 {loadingArtistAlbumTracks ? (
-                                  <p className="p-4 text-sm text-muted-on-dark">Loading tracks...</p>
+                                  <p className="p-4 text-sm text-muted-on-dark">
+                                    Loading tracks...
+                                  </p>
                                 ) : (
                                   artistAlbumTracks.map((song, index) => (
                                     <button
@@ -3728,7 +4630,8 @@ function App() {
                                       type="button"
                                       className={cn(
                                         "group/song grid w-full select-none grid-cols-[48px_2fr_120px] gap-3 px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/8",
-                                        currentSong?.id === song.id && "border-l-2 border-l-blossom bg-blossom/20",
+                                        currentSong?.id === song.id &&
+                                          "border-l-2 border-l-blossom bg-blossom/20",
                                       )}
                                       onDoubleClick={() => {
                                         setQueueSourceSongs(artistAlbumTracks);
@@ -3774,6 +4677,13 @@ function App() {
                     {activeView === "history" ? (
                       <div className="h-full rounded-2xl bg-cloud/5">
                         <HistoryView
+                          initialScrollTop={
+                            scrollPositionsRef.current[navigationRouteKey({ kind: "history" })] ?? 0
+                          }
+                          restoreScrollTop={historyRestoreScrollTop}
+                          onScrollTopChange={(scrollTop) => {
+                            recordScrollPositionForRoute({ kind: "history" }, scrollTop);
+                          }}
                           onPlaySong={(songId) => {
                             const cached = songLookupById.get(songId);
                             if (cached) {
@@ -3799,7 +4709,16 @@ function App() {
 
                     {activeView === "stats" ? (
                       <div className="h-full rounded-2xl bg-cloud/5 p-4">
-                        <div className="h-full overflow-auto">
+                        <div
+                          ref={statsScrollRef}
+                          className="h-full overflow-auto"
+                          onScroll={(event) =>
+                            recordScrollPositionForRoute(
+                              { kind: "stats" },
+                              event.currentTarget.scrollTop,
+                            )
+                          }
+                        >
                           <StatsView refreshSignal={statsRefreshSignal} />
                         </div>
                       </div>
@@ -3807,7 +4726,16 @@ function App() {
 
                     {activeView === "settings" ? (
                       <div className="h-full rounded-2xl bg-cloud/5 p-4">
-                        <div className="h-full overflow-auto">
+                        <div
+                          ref={settingsScrollRef}
+                          className="h-full overflow-auto"
+                          onScroll={(event) =>
+                            recordScrollPositionForRoute(
+                              { kind: "settings" },
+                              event.currentTarget.scrollTop,
+                            )
+                          }
+                        >
                           <TagsSettingsPanel
                             tags={tags}
                             onCreateTag={handleCreateTag}
@@ -3854,7 +4782,13 @@ function App() {
               {upNextOpen && (
                 <>
                   <Separator className="w-1 bg-transparent transition-colors hover:bg-leaf/40" />
-                  <Panel id="queue" defaultSize="280px" minSize="240px" maxSize="400px" className="bg-surface-dark">
+                  <Panel
+                    id="queue"
+                    defaultSize="280px"
+                    minSize="240px"
+                    maxSize="400px"
+                    className="bg-surface-dark"
+                  >
                     <UpNextPanel
                       nowPlaying={currentSong}
                       upNext={upNext}
@@ -4017,7 +4951,6 @@ function App() {
             </div>
           ) : null}
         </DragOverlay>
-
       </DndContext>
     </TooltipProvider>
   );

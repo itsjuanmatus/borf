@@ -4,11 +4,11 @@ import type * as React from "react";
 import { cn } from "../../lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-leaf/60",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bells/60",
   {
     variants: {
       variant: {
-        default: "bg-accent text-white shadow-sm hover:bg-leaf/90 hover:shadow-md",
+        default: "bg-bells text-night shadow-sm hover:bg-bells/85 hover:shadow-md",
         secondary: "bg-cloud/10 text-cloud hover:bg-cloud/15",
         ghost: "text-cloud hover:bg-cloud/10",
       },

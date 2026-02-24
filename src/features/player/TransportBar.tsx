@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ListMusic,
   Pause,
@@ -48,6 +49,7 @@ interface TransportBarProps {
   onSeek: (positionMs: number, durationMs: number) => void;
   onToggleUpNext: () => void;
   onVolumeChange: (volume: number) => void;
+  onVolumeScrub?: (volume: number) => void;
 }
 
 export function TransportBar({
@@ -66,11 +68,14 @@ export function TransportBar({
   onSeek,
   onToggleUpNext,
   onVolumeChange,
+  onVolumeScrub,
 }: TransportBarProps) {
   const playbackState = usePlayerStore((state) => state.playbackState);
   const positionMs = usePlayerStore((state) => state.positionMs);
   const durationMs = usePlayerStore((state) => state.durationMs);
   const upNextOpen = useQueueStore((state) => state.isOpen);
+  const [scrubValue, setScrubValue] = useState<number | null>(null);
+  const [localVolume, setLocalVolume] = useState<number | null>(null);
 
   return (
     <header className="bg-night">
@@ -198,22 +203,26 @@ export function TransportBar({
             {/* Progress scrubber */}
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] tabular-nums text-cloud/40">
-                {formatDuration(positionMs)}
+                {formatDuration(scrubValue ?? positionMs)}
               </span>
               <Slider
                 className="flex-1"
-                value={[Math.min(positionMs, durationMs || positionMs)]}
+                value={[scrubValue ?? Math.min(positionMs, durationMs || positionMs)]}
                 max={Math.max(durationMs, 1)}
                 step={250}
                 trackClassName="bg-cloud/15 h-1"
                 thumbClassName="h-2.5 w-2.5 bg-cloud border-cloud/30"
+                onValueChange={(value) => {
+                  setScrubValue(value[0] ?? 0);
+                }}
                 onValueCommit={(value) => {
                   const nextPosition = value[0] ?? 0;
+                  setScrubValue(null);
                   onSeek(nextPosition, durationMs);
                 }}
               />
               <span className="text-[10px] tabular-nums text-cloud/40">
-                {formatRemaining(positionMs, durationMs)}
+                {formatRemaining(scrubValue ?? positionMs, durationMs)}
               </span>
             </div>
           </div>
@@ -227,15 +236,20 @@ export function TransportBar({
           <Volume2 className="h-3.5 w-3.5 text-cloud/50" />
           <div className="w-24">
             <Slider
-              value={[volume * 100]}
+              value={[localVolume ?? volume * 100]}
               max={100}
               step={1}
               trackClassName="bg-cloud/15 h-1"
               rangeClassName="bg-cloud/40"
               thumbClassName="h-3 w-3 bg-cloud border-cloud/30"
               onValueChange={(value) => {
-                const nextVolume = (value[0] ?? 0) / 100;
-                onVolumeChange(nextVolume);
+                const v = value[0] ?? 0;
+                setLocalVolume(v);
+                onVolumeScrub?.(v / 100);
+              }}
+              onValueCommit={(value) => {
+                setLocalVolume(null);
+                onVolumeChange((value[0] ?? 0) / 100);
               }}
             />
           </div>
