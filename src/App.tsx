@@ -27,7 +27,7 @@ import {
   UserRound,
   Waves,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { SongArtwork } from "./components/song-artwork";
 import { Button } from "./components/ui/button";
@@ -504,6 +504,8 @@ function App() {
 
   const loadedSongPagesRef = useRef<Set<number>>(new Set());
   const loadingSongPagesRef = useRef<Set<number>>(new Set());
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const [contextMenuPos, setContextMenuPos] = useState<{ left: number; top: number } | null>(null);
   const debouncedSearchParts = useMemo(
     () => splitSearchQueryTerms(debouncedSearchQuery),
     [debouncedSearchQuery],
@@ -3337,6 +3339,18 @@ function App() {
     };
   }, [songContextMenu]);
 
+  useLayoutEffect(() => {
+    if (!songContextMenu || !contextMenuRef.current) {
+      setContextMenuPos(null);
+      return;
+    }
+    const el = contextMenuRef.current;
+    const pad = 8;
+    const left = Math.max(pad, Math.min(songContextMenu.x, window.innerWidth - el.offsetWidth - pad));
+    const top = Math.max(pad, Math.min(songContextMenu.y, window.innerHeight - el.offsetHeight - pad));
+    setContextMenuPos({ left, top });
+  }, [songContextMenu]);
+
   useEffect(() => {
     if (scrollRestoreTick < 0) {
       return;
@@ -3462,6 +3476,15 @@ function App() {
               void audioApi
                 .setVolume(nextVolume)
                 .catch((error: unknown) => setErrorMessage(String(error)));
+            }}
+            onArtistClick={(artist) => {
+              navigateToRoute({ kind: "artists-detail", artist });
+            }}
+            onAlbumClick={(album, albumArtist) => {
+              navigateToRoute({
+                kind: "albums-detail",
+                album: { album, album_artist: albumArtist },
+              });
             }}
             onSearchOpen={() => setIsSearchPaletteOpen(true)}
           />
@@ -4089,7 +4112,7 @@ function App() {
                       <div className="h-full rounded-2xl bg-cloud/5 p-4">
                         {selectedAlbum ? (
                           <div className="flex h-full min-h-0 flex-col">
-                            <div className="mb-4 flex items-center justify-between">
+                            <div className="mb-4 flex items-center">
                               <div>
                                 <h3 className="text-lg font-semibold text-cloud">
                                   {selectedAlbum.album}
@@ -4098,14 +4121,6 @@ function App() {
                                   {selectedAlbum.album_artist}
                                 </p>
                               </div>
-                              <Button
-                                variant="secondary"
-                                onClick={() => {
-                                  navigateToRoute({ kind: "albums-list" });
-                                }}
-                              >
-                                Back to albums
-                              </Button>
                             </div>
 
                             <div
@@ -4271,6 +4286,12 @@ function App() {
                               )
                             }
                           >
+                            <div className="sticky top-0 z-10 grid grid-cols-[40px_2fr_100px_100px] items-center gap-3 bg-surface-dark/90 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-on-dark backdrop-blur-sm">
+                              <span />
+                              <span>Artist</span>
+                              <span className="text-right">Albums</span>
+                              <span className="text-right">Songs</span>
+                            </div>
                             {isLoadingArtists ? (
                               <p className="p-4 text-sm text-muted-on-dark">Loading artists...</p>
                             ) : (
@@ -4300,7 +4321,7 @@ function App() {
                                     >
                                       <button
                                         type="button"
-                                        className="grid h-full w-full grid-cols-[2fr_120px_120px] gap-3 px-3 text-left text-sm text-cloud hover:bg-cloud/8"
+                                        className="grid h-full w-full grid-cols-[40px_2fr_100px_100px] items-center gap-3 rounded-xl px-3 text-left text-sm text-cloud transition-colors hover:bg-cloud/8"
                                         onClick={() => {
                                           navigateToRoute({
                                             kind: "artists-detail",
@@ -4308,14 +4329,24 @@ function App() {
                                           });
                                         }}
                                       >
+                                        {artist.artwork_path ? (
+                                          <SongArtwork
+                                            artworkPath={artist.artwork_path}
+                                            sizeClassName="h-8 w-8"
+                                          />
+                                        ) : (
+                                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cloud/10 text-sm font-semibold text-muted-on-dark">
+                                            {artist.artist.charAt(0).toUpperCase()}
+                                          </div>
+                                        )}
                                         <span className="truncate font-medium">
                                           {artist.artist}
                                         </span>
                                         <span className="text-right text-muted-on-dark">
-                                          {artist.album_count} albums
+                                          {artist.album_count}
                                         </span>
                                         <span className="text-right text-muted-on-dark">
-                                          {artist.song_count} songs
+                                          {artist.song_count}
                                         </span>
                                       </button>
                                     </div>
@@ -4326,21 +4357,30 @@ function App() {
                           </div>
                         ) : (
                           <div className="flex h-full min-h-0 flex-col">
-                            <div className="mb-4 flex items-center justify-between">
-                              <div>
-                                <h3 className="text-lg font-semibold text-cloud">
+                            <div className="mb-5 flex items-center gap-4">
+                              {artistAlbums.length > 0 && artistAlbums[0]?.artwork_path ? (
+                                <SongArtwork
+                                  artworkPath={artistAlbums[0].artwork_path}
+                                  sizeClassName="h-20 w-20"
+                                  className="shrink-0 rounded-2xl"
+                                />
+                              ) : (
+                                <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl bg-cloud/10">
+                                  <UserRound className="h-8 w-8 text-muted-on-dark" />
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <h3 className="truncate text-2xl font-bold tracking-tight text-cloud">
                                   {selectedArtist}
                                 </h3>
-                                <p className="text-sm text-muted-on-dark">Artist view</p>
+                                <div className="mt-1 flex gap-3 text-sm text-muted-on-dark">
+                                  <span>{artistAlbums.length} {artistAlbums.length === 1 ? "album" : "albums"}</span>
+                                  <span className="text-cloud/20">|</span>
+                                  <span>{artistAlbums.reduce((sum, a) => sum + a.song_count, 0)} songs</span>
+                                  <span className="text-cloud/20">|</span>
+                                  <span>{formatDuration(artistAlbums.reduce((sum, a) => sum + a.total_duration_ms, 0))}</span>
+                                </div>
                               </div>
-                              <Button
-                                variant="secondary"
-                                onClick={() => {
-                                  navigateToRoute({ kind: "artists-list" });
-                                }}
-                              >
-                                Back to artists
-                              </Button>
                             </div>
 
                             {!selectedArtistAlbum ? (
@@ -4383,13 +4423,13 @@ function App() {
                                         <SongArtwork
                                           artworkPath={album.artwork_path}
                                           className="mb-3"
-                                          sizeClassName="h-28 w-full"
+                                          sizeClassName="h-32 w-full"
                                         />
                                         <p className="truncate font-medium text-cloud">
                                           {album.album}
                                         </p>
-                                        <p className="text-sm text-muted-on-dark">
-                                          {album.song_count} songs
+                                        <p className="mt-1 text-xs text-muted-on-dark">
+                                          {album.song_count} songs • {formatDuration(album.total_duration_ms)}
                                         </p>
                                       </button>
                                     ))}
@@ -4414,7 +4454,7 @@ function App() {
                                   );
                                 }}
                               >
-                                <div className="flex items-center justify-between px-3 py-2">
+                                <div className="flex items-center px-3 py-2">
                                   <div>
                                     <p className="font-medium text-cloud">
                                       {selectedArtistAlbum.album}
@@ -4423,20 +4463,6 @@ function App() {
                                       {selectedArtistAlbum.album_artist}
                                     </p>
                                   </div>
-                                  <Button
-                                    variant="secondary"
-                                    onClick={() => {
-                                      if (!selectedArtist) {
-                                        return;
-                                      }
-                                      navigateToRoute({
-                                        kind: "artists-detail",
-                                        artist: selectedArtist,
-                                      });
-                                    }}
-                                  >
-                                    Back to artist albums
-                                  </Button>
                                 </div>
 
                                 {loadingArtistAlbumTracks ? (
@@ -4625,12 +4651,13 @@ function App() {
 
           {songContextMenu ? (
             <div
-              className="fixed z-50 rounded-2xl bg-cloud p-1 shadow-xl"
-              style={{ left: songContextMenu.x, top: songContextMenu.y }}
+              ref={contextMenuRef}
+              className={`fixed z-50 rounded-2xl border border-border-dark bg-night p-1 shadow-xl transition-opacity duration-75 ${contextMenuPos ? "opacity-100" : "opacity-0"}`}
+              style={contextMenuPos ?? { left: songContextMenu.x, top: songContextMenu.y }}
             >
               <button
                 type="button"
-                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/10"
                 onClick={() => {
                   if (songContextMenu.source === "playlist") {
                     void playFromPlaylistIndex(songContextMenu.index).catch((error: unknown) =>
@@ -4648,7 +4675,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/10"
                 onClick={() => {
                   addSongsToQueue(songContextMenu.songIds);
                   setSongContextMenu(null);
@@ -4658,7 +4685,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/10"
                 onClick={() => {
                   setClipboardSongIds(songContextMenu.songIds);
                   setClipboardHint(`${songContextMenu.songIds.length} song(s) copied`);
@@ -4669,7 +4696,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/10"
                 onClick={() => {
                   void openManageTagsForSongs(songContextMenu.songIds);
                   setSongContextMenu(null);
@@ -4679,7 +4706,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/10"
                 onClick={() => {
                   setMetadataTargetSongIds(songContextMenu.songIds);
                   setShowEditCommentDialog(true);
@@ -4690,7 +4717,7 @@ function App() {
               </button>
               <button
                 type="button"
-                className="block w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-sand/70"
+                className="block w-full rounded-xl px-3 py-2 text-left text-sm text-cloud hover:bg-cloud/10"
                 onClick={() => {
                   setMetadataTargetSongIds(songContextMenu.songIds);
                   setShowCustomStartDialog(true);
