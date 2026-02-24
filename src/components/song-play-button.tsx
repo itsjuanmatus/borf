@@ -16,9 +16,8 @@ export function SongPlayButton({
     <button
       type="button"
       className={cn(
-        "flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-all duration-150",
-        "bg-cloud/0 text-cloud/0",
-        "group-hover/song:bg-cloud/90 group-hover/song:text-night group-hover/song:shadow-sm",
+        "flex h-6 w-6 shrink-0 items-center justify-center transition-all duration-150",
+        "text-blossom",
         "hover:scale-110",
         className,
       )}
@@ -30,7 +29,7 @@ export function SongPlayButton({
         onPlay();
       }}
     >
-      <Play className="h-3 w-3 fill-current" />
+      <Play className="h-3.5 w-3.5 fill-current" />
     </button>
   );
 }

@@ -3634,7 +3634,7 @@ function App() {
                 onResize={(size) => setSidebarSize(Math.round(size.asPercentage))}
                 className="bg-surface-dark"
               >
-                <aside className="h-full overflow-y-auto bg-surface-dark p-4">
+                <aside className="h-full select-none overflow-y-auto bg-surface-dark p-4">
                   <div className="mb-6 flex items-center gap-2">
                     <img src="app-icon.png" alt="Borf" className="h-12 w-12" />
                     <div>
@@ -4034,10 +4034,7 @@ function App() {
                                   >
                                     {song ? (
                                       <>
-                                        <span className="text-muted-on-dark">
-                                          {virtualRow.index + 1}
-                                        </span>
-                                        <div className="flex min-w-0 items-center gap-2">
+                                        <span className="flex items-center justify-center">
                                           <SongPlayButton
                                             onPlay={() => {
                                               void playFromSongsIndex(virtualRow.index).catch(
@@ -4046,6 +4043,8 @@ function App() {
                                             }}
                                             label={`Play ${song.title}`}
                                           />
+                                        </span>
+                                        <div className="flex min-w-0 items-center gap-2">
                                           <SongArtwork artworkPath={song.artwork_path} />
                                           <div className="min-w-0">
                                             <div className="flex items-center gap-1.5">
@@ -4374,8 +4373,7 @@ function App() {
                                       });
                                     }}
                                   >
-                                    <span className="text-xs text-muted-on-dark">{index + 1}</span>
-                                    <div className="flex min-w-0 items-center gap-2">
+                                    <span className="flex items-center justify-center">
                                       <SongPlayButton
                                         onPlay={() => {
                                           setQueueSourceSongs(albumTracks);
@@ -4386,6 +4384,8 @@ function App() {
                                         }}
                                         label={`Play ${song.title}`}
                                       />
+                                    </span>
+                                    <div className="flex min-w-0 items-center gap-2">
                                       <SongArtwork artworkPath={song.artwork_path} />
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-1.5">
@@ -4819,8 +4819,7 @@ function App() {
                                         });
                                       }}
                                     >
-                                      <span className="text-xs text-muted-on-dark">{index + 1}</span>
-                                      <div className="flex min-w-0 items-center gap-2">
+                                      <span className="flex items-center justify-center">
                                         <SongPlayButton
                                           onPlay={() => {
                                             setQueueSourceSongs(artistAlbumTracks);
@@ -4836,6 +4835,8 @@ function App() {
                                           }}
                                           label={`Play ${song.title}`}
                                         />
+                                      </span>
+                                      <div className="flex min-w-0 items-center gap-2">
                                         <SongArtwork artworkPath={song.artwork_path} />
                                         <div className="min-w-0">
                                           <div className="flex items-center gap-1.5">

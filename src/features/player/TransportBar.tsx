@@ -105,7 +105,7 @@ export function TransportBar({
   }, [artworkExpanded]);
 
   return (
-    <header className="bg-night transition-all duration-300 ease-out">
+    <header className="bg-night select-none transition-all duration-300 ease-out">
       <div className="flex items-center px-4 py-2">
         {/* Window drag region */}
         <div className="w-28" />
@@ -246,7 +246,7 @@ export function TransportBar({
                   <>
                     <button
                       type="button"
-                      className="hover:text-cloud/70 hover:underline"
+                      className="cursor-pointer hover:text-cloud/70 hover:underline"
                       onClick={() => onArtistClick(currentSong.artist)}
                     >
                       {currentSong.artist}
@@ -254,7 +254,7 @@ export function TransportBar({
                     <span> — </span>
                     <button
                       type="button"
-                      className="hover:text-cloud/70 hover:underline"
+                      className="cursor-pointer hover:text-cloud/70 hover:underline"
                       onClick={() => onAlbumClick(currentSong.album, currentSong.artist)}
                     >
                       {currentSong.album}
@@ -275,8 +275,8 @@ export function TransportBar({
                 value={[scrubValue ?? Math.min(positionMs, durationMs || positionMs)]}
                 max={Math.max(durationMs, 1)}
                 step={250}
-                trackClassName="bg-cloud/15 h-1"
-                thumbClassName="h-2.5 w-2.5 bg-cloud border-cloud/30"
+                trackClassName="bg-cloud/15 h-1 cursor-pointer"
+                thumbClassName="h-2.5 w-2.5 bg-cloud border-cloud/30 cursor-pointer"
                 onValueChange={(value) => {
                   setScrubValue(value[0] ?? 0);
                 }}

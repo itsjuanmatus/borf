@@ -151,12 +151,14 @@ function TrackRow({
         onDoubleClick={() => onPlayTrack(index)}
         onContextMenu={(event) => onTrackContextMenu(event, track.song.id, index)}
       >
-        <span className="flex items-center gap-1 text-xs text-muted-on-dark">
-          {reorderEnabled ? <GripVertical className="h-3.5 w-3.5" /> : null}
-          {index + 1}
+        <span className="flex items-center justify-center">
+          {reorderEnabled ? (
+            <GripVertical className="h-3.5 w-3.5 text-muted-on-dark" />
+          ) : (
+            <SongPlayButton onPlay={() => onPlayTrack(index)} label={`Play ${track.song.title}`} />
+          )}
         </span>
         <div className="flex min-w-0 items-center gap-2">
-          <SongPlayButton onPlay={() => onPlayTrack(index)} label={`Play ${track.song.title}`} />
           <SongArtwork artworkPath={track.song.artwork_path} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
@@ -376,7 +378,12 @@ export function PlaylistView({
     );
   }
 
-  const content = (
+  const content = trackCount === 0 ? (
+    <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-muted-on-dark">
+      <ListMusic className="h-4 w-4" />
+      Drop songs here or use paste.
+    </div>
+  ) : (
     <div
       ref={scrollRef}
       className="min-h-0 flex-1 overflow-auto"
@@ -438,13 +445,6 @@ export function PlaylistView({
             </div>
           );
         })}
-
-        {trackCount === 0 ? (
-          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-on-dark">
-            <ListMusic className="h-4 w-4" />
-            Drop songs here or use paste.
-          </div>
-        ) : null}
       </div>
     </div>
   );

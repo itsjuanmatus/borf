@@ -30,13 +30,13 @@ export function PlaylistContextMenu({
 
   return (
     <div
-      className="fixed z-50 w-52 rounded-2xl bg-cloud p-1 shadow-xl"
+      className="fixed z-50 w-52 rounded-2xl border border-border-dark bg-night p-1 shadow-xl"
       style={{ left: x, top: y }}
     >
       <Button
         type="button"
         variant="ghost"
-        className="h-8 w-full justify-start rounded-xl hover:bg-sand/70"
+        className="h-8 w-full justify-start rounded-xl text-cloud hover:bg-cloud/10 hover:text-cloud"
         onClick={() => {
           onCreatePlaylist(parentId);
           onClose();
@@ -47,7 +47,7 @@ export function PlaylistContextMenu({
       <Button
         type="button"
         variant="ghost"
-        className="h-8 w-full justify-start rounded-xl hover:bg-sand/70"
+        className="h-8 w-full justify-start rounded-xl text-cloud hover:bg-cloud/10 hover:text-cloud"
         onClick={() => {
           onCreateFolder(parentId);
           onClose();
@@ -60,7 +60,7 @@ export function PlaylistContextMenu({
           <Button
             type="button"
             variant="ghost"
-            className="h-8 w-full justify-start rounded-xl hover:bg-sand/70"
+            className="h-8 w-full justify-start rounded-xl text-cloud hover:bg-cloud/10 hover:text-cloud"
             onClick={() => {
               onRename(target);
               onClose();
@@ -72,7 +72,7 @@ export function PlaylistContextMenu({
             <Button
               type="button"
               variant="ghost"
-              className="h-8 w-full justify-start rounded-xl hover:bg-sand/70"
+              className="h-8 w-full justify-start rounded-xl text-cloud hover:bg-cloud/10 hover:text-cloud"
               onClick={() => {
                 onDuplicate(target);
                 onClose();
@@ -85,7 +85,7 @@ export function PlaylistContextMenu({
             <Button
               type="button"
               variant="ghost"
-              className="h-8 w-full justify-start rounded-xl hover:bg-sand/70"
+              className="h-8 w-full justify-start rounded-xl text-cloud hover:bg-cloud/10 hover:text-cloud"
               onClick={() => {
                 onExportM3u8(target);
                 onClose();
@@ -97,7 +97,7 @@ export function PlaylistContextMenu({
           <Button
             type="button"
             variant="ghost"
-            className="h-8 w-full justify-start rounded-xl text-red-700 hover:bg-sand/70 hover:text-red-700"
+            className="h-8 w-full justify-start rounded-xl text-red-400 hover:bg-cloud/10 hover:text-red-400"
             onClick={() => {
               onDelete(target);
               onClose();
