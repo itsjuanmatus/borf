@@ -133,7 +133,10 @@ function TrackRow({
           {reorderEnabled ? (
             <GripVertical className="h-3.5 w-3.5 text-muted-on-dark" />
           ) : (
-            <SongPlayButton onPlay={() => onPlayTrack(index)} label={`Play ${track.song.title}`} />
+            <>
+              <span className="text-muted-on-dark group-hover/song:hidden">{index + 1}</span>
+              <SongPlayButton onPlay={() => onPlayTrack(index)} label={`Play ${track.song.title}`} className="hidden group-hover/song:flex" />
+            </>
           )}
         </span>
         <div className="flex min-w-0 items-center gap-2">

@@ -175,11 +175,13 @@ export function SongsView({
                   {song ? (
                     <>
                       <span className="flex items-center justify-center">
+                        <span className="text-muted-on-dark group-hover/song:hidden">{virtualRow.index + 1}</span>
                         <SongPlayButton
                           onPlay={() => {
                             onPlayFromIndex(virtualRow.index);
                           }}
                           label={`Play ${song.title}`}
+                          className="hidden group-hover/song:flex"
                         />
                       </span>
                       <div className="flex min-w-0 items-center gap-2">
