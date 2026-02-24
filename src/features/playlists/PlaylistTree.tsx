@@ -131,6 +131,8 @@ export function PlaylistTree({
 }: PlaylistTreeProps) {
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
   const treeRootRef = useRef<HTMLDivElement | null>(null);
+  const expandedFolderIdsRef = useRef(expandedFolderIds);
+  expandedFolderIdsRef.current = expandedFolderIds;
 
   useEffect(() => {
     setExpandedFolderIds((previous) => {
@@ -226,7 +228,7 @@ export function PlaylistTree({
       if (!parent) {
         break;
       }
-      if (parent.is_folder && !expandedFolderIds.has(parent.id)) {
+      if (parent.is_folder && !expandedFolderIdsRef.current.has(parent.id)) {
         return;
       }
       ancestor = parent;
@@ -246,7 +248,7 @@ export function PlaylistTree({
     }
 
     activeNode.scrollIntoView({ block: "nearest" });
-  }, [activePlaylistId, expandedFolderIds, playlistById]);
+  }, [activePlaylistId, playlistById]);
 
   return (
     <div
