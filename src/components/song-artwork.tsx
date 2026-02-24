@@ -63,7 +63,6 @@ export function SongArtwork({
           }}
         />
       ) : null}
-
     </div>
   );
 }

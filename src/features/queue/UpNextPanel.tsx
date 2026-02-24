@@ -79,7 +79,13 @@ export function UpNextPanel({
           <h3 className="text-sm font-semibold text-cloud">Up Next</h3>
           <p className="text-xs text-muted-on-dark">Manual queue first</p>
         </div>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-muted-on-dark hover:text-cloud" onClick={onClose}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-on-dark hover:text-cloud"
+          onClick={onClose}
+        >
           <X className="h-4 w-4" />
         </Button>
       </header>
@@ -100,7 +106,9 @@ export function UpNextPanel({
         </section>
 
         <section className="mb-5">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">Up Next</p>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+            Up Next
+          </p>
           <div
             ref={queueDrop.setNodeRef}
             className={cn(

@@ -7,11 +7,7 @@ interface SongPlayButtonProps {
   className?: string;
 }
 
-export function SongPlayButton({
-  onPlay,
-  label = "Play song",
-  className,
-}: SongPlayButtonProps) {
+export function SongPlayButton({ onPlay, label = "Play song", className }: SongPlayButtonProps) {
   return (
     <button
       type="button"

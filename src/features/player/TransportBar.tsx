@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import {
   ListMusic,
   Pause,
@@ -11,6 +10,7 @@ import {
   SkipForward,
   Volume2,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { SongArtwork } from "../../components/song-artwork";
 import { Slider } from "../../components/ui/slider";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
@@ -118,9 +118,7 @@ export function TransportBar({
                 type="button"
                 className={cn(
                   "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors",
-                  shuffleEnabled
-                    ? "bg-leaf/70 text-cloud"
-                    : "text-cloud/60 hover:text-cloud",
+                  shuffleEnabled ? "bg-leaf/70 text-cloud" : "text-cloud/60 hover:text-cloud",
                 )}
                 onClick={onToggleShuffle}
                 disabled={queueLength === 0}
@@ -183,9 +181,7 @@ export function TransportBar({
                 type="button"
                 className={cn(
                   "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors",
-                  repeatMode !== "off"
-                    ? "bg-leaf/70 text-cloud"
-                    : "text-cloud/60 hover:text-cloud",
+                  repeatMode !== "off" ? "bg-leaf/70 text-cloud" : "text-cloud/60 hover:text-cloud",
                 )}
                 onClick={onCycleRepeat}
               >
@@ -216,9 +212,7 @@ export function TransportBar({
             type="button"
             className={cn(
               "shrink-0 transition-all duration-300 ease-out",
-              currentSong?.artwork_path
-                ? "cursor-pointer hover:opacity-90"
-                : "cursor-default",
+              currentSong?.artwork_path ? "cursor-pointer hover:opacity-90" : "cursor-default",
             )}
             onClick={() => {
               if (currentSong?.artwork_path) {
@@ -341,9 +335,7 @@ export function TransportBar({
               type="button"
               className={cn(
                 "ml-2 inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors",
-                upNextOpen
-                  ? "bg-leaf/70 text-cloud"
-                  : "text-cloud/50 hover:text-cloud",
+                upNextOpen ? "bg-leaf/70 text-cloud" : "text-cloud/50 hover:text-cloud",
               )}
               onClick={onToggleUpNext}
             >

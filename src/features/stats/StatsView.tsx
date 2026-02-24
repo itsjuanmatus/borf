@@ -102,7 +102,9 @@ export function StatsView({ refreshSignal }: StatsViewProps) {
 
   if (loading && !stats) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-on-dark">Loading stats...</div>
+      <div className="flex h-full items-center justify-center text-muted-on-dark">
+        Loading stats...
+      </div>
     );
   }
 
@@ -154,7 +156,9 @@ export function StatsView({ refreshSignal }: StatsViewProps) {
             key={p.label}
             type="button"
             className={`rounded-xl px-3 py-1.5 text-sm font-medium transition-colors ${
-              periodDays === p.value ? "bg-leaf/25 text-cloud" : "text-muted-on-dark hover:bg-cloud/8"
+              periodDays === p.value
+                ? "bg-leaf/25 text-cloud"
+                : "text-muted-on-dark hover:bg-cloud/8"
             }`}
             onClick={() => setPeriodDays(p.value)}
           >

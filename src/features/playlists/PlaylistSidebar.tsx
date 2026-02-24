@@ -64,7 +64,9 @@ export function PlaylistSidebar({
   return (
     <section className="mt-4 border-t border-border-dark pt-4">
       <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-on-dark">Playlists</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
+          Playlists
+        </p>
         <div className="flex items-center gap-1">
           <Button
             type="button"

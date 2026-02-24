@@ -18,6 +18,7 @@ import type {
   PlaylistTrackItem,
   SongOptionalColumnKey,
 } from "../../types";
+import { SongOptionalCells } from "../library/SongOptionalCells";
 
 const TRACK_ROW_HEIGHT = 54;
 const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
@@ -69,29 +70,6 @@ interface TrackRowProps {
   onPlayTrack: (index: number) => void;
   onAddToQueue: (songId: string) => void;
   onTrackContextMenu: (event: MouseEvent<HTMLButtonElement>, songId: string, index: number) => void;
-}
-
-function formatDuration(ms: number) {
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return "0:00";
-  }
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatDateAdded(dateAdded: string | null) {
-  if (!dateAdded) {
-    return "—";
-  }
-
-  const parsed = new Date(dateAdded);
-  if (Number.isNaN(parsed.getTime())) {
-    return dateAdded;
-  }
-
-  return parsed.toLocaleDateString();
 }
 
 function TrackRow({
@@ -182,62 +160,7 @@ function TrackRow({
             ) : null}
           </div>
         </div>
-        {visibleSongColumnConfigs.map(({ key: columnKey, config }) => {
-          if (columnKey === "artist") {
-            return (
-              <span key={columnKey} className="truncate text-muted-on-dark">
-                {track.song.artist}
-              </span>
-            );
-          }
-          if (columnKey === "album") {
-            return (
-              <span key={columnKey} className="truncate text-muted-on-dark">
-                {track.song.album}
-              </span>
-            );
-          }
-          if (columnKey === "duration_ms") {
-            return (
-              <span key={columnKey} className="text-right text-muted-on-dark">
-                {formatDuration(track.song.duration_ms)}
-              </span>
-            );
-          }
-          if (columnKey === "play_count") {
-            return (
-              <span key={columnKey} className="text-right text-muted-on-dark">
-                {track.song.play_count}
-              </span>
-            );
-          }
-          if (columnKey === "comment") {
-            const comment = track.song.comment?.trim() ?? "";
-            return (
-              <span
-                key={columnKey}
-                className="truncate text-muted-on-dark"
-                title={comment || undefined}
-              >
-                {comment || "—"}
-              </span>
-            );
-          }
-          if (columnKey === "date_added") {
-            return (
-              <span
-                key={columnKey}
-                className={cn(
-                  "text-muted-on-dark",
-                  config.align === "right" ? "text-right" : "truncate",
-                )}
-              >
-                {formatDateAdded(track.song.date_added)}
-              </span>
-            );
-          }
-          return null;
-        })}
+        <SongOptionalCells song={track.song} visibleSongColumnConfigs={visibleSongColumnConfigs} />
         <span className="flex justify-end">
           <button
             type="button"
@@ -378,76 +301,77 @@ export function PlaylistView({
     );
   }
 
-  const content = trackCount === 0 ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-muted-on-dark">
-      <ListMusic className="h-4 w-4" />
-      Drop songs here or use paste.
-    </div>
-  ) : (
-    <div
-      ref={scrollRef}
-      className="min-h-0 flex-1 overflow-auto"
-      onScroll={(event) => onScrollTopChange?.(event.currentTarget.scrollTop)}
-    >
-      <div
-        style={{
-          height: `${virtualizer.getTotalSize()}px`,
-          position: "relative",
-        }}
-      >
-        {virtualItems.map((virtualRow) => {
-          const track = tracks[virtualRow.index];
-
-          return (
-            <div
-              key={virtualRow.key}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualRow.size}px`,
-                transform: `translateY(${virtualRow.start}px)`,
-              }}
-            >
-              {track ? (
-                <TrackRow
-                  playlistId={playlist.id}
-                  track={track}
-                  index={virtualRow.index}
-                  visibleSongColumnConfigs={visibleSongColumnConfigs}
-                  rowGridTemplateColumns={rowGridTemplateColumns}
-                  selectedSongIds={selectedSongIds}
-                  selectedSongIdSet={selectedSongIdSet}
-                  currentSongId={currentSongId}
-                  reorderEnabled={isReorderMode && canReorder}
-                  onSelectTrack={onSelectTrack}
-                  onPlayTrack={onPlayTrack}
-                  onAddToQueue={onAddToQueue}
-                  onTrackContextMenu={onTrackContextMenu}
-                />
-              ) : (
-                <div
-                  className="grid h-full w-full items-center gap-3 px-3 text-sm text-muted-on-dark"
-                  style={{ gridTemplateColumns: rowGridTemplateColumns }}
-                >
-                  <span>{virtualRow.index + 1}</span>
-                  <span
-                    style={{
-                      gridColumn: `span ${rowLoadingColumnSpan} / span ${rowLoadingColumnSpan}`,
-                    }}
-                  >
-                    Loading...
-                  </span>
-                  <span />
-                </div>
-              )}
-            </div>
-          );
-        })}
+  const content =
+    trackCount === 0 ? (
+      <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-muted-on-dark">
+        <ListMusic className="h-4 w-4" />
+        Drop songs here or use paste.
       </div>
-    </div>
-  );
+    ) : (
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-auto"
+        onScroll={(event) => onScrollTopChange?.(event.currentTarget.scrollTop)}
+      >
+        <div
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            position: "relative",
+          }}
+        >
+          {virtualItems.map((virtualRow) => {
+            const track = tracks[virtualRow.index];
+
+            return (
+              <div
+                key={virtualRow.key}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                {track ? (
+                  <TrackRow
+                    playlistId={playlist.id}
+                    track={track}
+                    index={virtualRow.index}
+                    visibleSongColumnConfigs={visibleSongColumnConfigs}
+                    rowGridTemplateColumns={rowGridTemplateColumns}
+                    selectedSongIds={selectedSongIds}
+                    selectedSongIdSet={selectedSongIdSet}
+                    currentSongId={currentSongId}
+                    reorderEnabled={isReorderMode && canReorder}
+                    onSelectTrack={onSelectTrack}
+                    onPlayTrack={onPlayTrack}
+                    onAddToQueue={onAddToQueue}
+                    onTrackContextMenu={onTrackContextMenu}
+                  />
+                ) : (
+                  <div
+                    className="grid h-full w-full items-center gap-3 px-3 text-sm text-muted-on-dark"
+                    style={{ gridTemplateColumns: rowGridTemplateColumns }}
+                  >
+                    <span>{virtualRow.index + 1}</span>
+                    <span
+                      style={{
+                        gridColumn: `span ${rowLoadingColumnSpan} / span ${rowLoadingColumnSpan}`,
+                      }}
+                    >
+                      Loading...
+                    </span>
+                    <span />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
 
   return (
     <div
