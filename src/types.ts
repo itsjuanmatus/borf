@@ -76,6 +76,32 @@ export interface LibrarySearchResult {
   folders: PlaylistSearchItem[];
 }
 
+export type SearchPaletteItemKind = "song" | "album" | "artist" | "playlist" | "folder" | "action";
+
+export interface SearchPaletteAlbumRef {
+  album: string;
+  album_artist: string;
+}
+
+export interface SearchPaletteItem {
+  kind: SearchPaletteItemKind;
+  id: string;
+  title: string;
+  subtitle: string | null;
+  score: number;
+  rank_reason: string | null;
+  song: SongListItem | null;
+  album: SearchPaletteAlbumRef | null;
+  artist: string | null;
+  playlist: PlaylistSearchItem | null;
+  action_id: string | null;
+}
+
+export interface SearchPaletteResult {
+  items: SearchPaletteItem[];
+  took_ms: number;
+}
+
 export interface QueueState {
   songIds: string[];
   currentIndex: number | null;

@@ -51,6 +51,9 @@ export function TagsSettingsPanel({
         />
         <input
           type="color"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           value={newTagColor}
           onChange={(event) => setNewTagColor(event.target.value)}
           className="h-9 w-14 rounded-lg bg-cloud/10 p-1"

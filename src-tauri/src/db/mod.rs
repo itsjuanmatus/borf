@@ -1,12 +1,14 @@
 use chrono::{DateTime, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -17,6 +19,8 @@ const MIGRATION_0004: &str = include_str!("../../migrations/0004_itunes_playlist
 const MIGRATION_0005: &str = include_str!("../../migrations/0005_phase4_metadata_tags_watcher.sql");
 const MIGRATION_0006: &str = include_str!("../../migrations/0006_phase5_play_history.sql");
 const MIGRATION_0007: &str = include_str!("../../migrations/0007_phase6_search_indexes.sql");
+const MIGRATION_0008: &str =
+    include_str!("../../migrations/0008_phase7_unified_palette_search.sql");
 
 const LIBRARY_ROOTS_SETTING_KEY: &str = "library_roots";
 
@@ -100,6 +104,44 @@ pub struct LibrarySearchResult {
     pub artists: Vec<ArtistListItem>,
     pub playlists: Vec<PlaylistSearchItem>,
     pub folders: Vec<PlaylistSearchItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchPaletteAlbumRef {
+    pub album: String,
+    pub album_artist: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchPaletteItemKind {
+    Song,
+    Album,
+    Artist,
+    Playlist,
+    Folder,
+    Action,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchPaletteItem {
+    pub kind: SearchPaletteItemKind,
+    pub id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub score: f64,
+    pub rank_reason: Option<String>,
+    pub song: Option<SongListItem>,
+    pub album: Option<SearchPaletteAlbumRef>,
+    pub artist: Option<String>,
+    pub playlist: Option<PlaylistSearchItem>,
+    pub action_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchPaletteResult {
+    pub items: Vec<SearchPaletteItem>,
+    pub took_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +319,7 @@ struct LibraryRootsSetting {
 
 pub struct Database {
     connection: Mutex<Connection>,
+    search_connection: Option<Mutex<Connection>>,
     artwork_dir: PathBuf,
 }
 
@@ -293,12 +336,15 @@ impl Database {
         let connection = Connection::open(&db_path)
             .map_err(|error| format!("failed to open sqlite database: {error}"))?;
 
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|error| format!("failed to enable sqlite pragmas: {error}"))?;
+        configure_main_connection(&connection)?;
 
         run_migrations(&connection)
             .map_err(|error| format!("failed to run migrations: {error}"))?;
+
+        let search_connection =
+            Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| format!("failed to open sqlite search connection: {error}"))?;
+        configure_search_connection(&search_connection)?;
 
         let cache_dir = app_handle
             .path()
@@ -310,8 +356,21 @@ impl Database {
 
         Ok(Self {
             connection: Mutex::new(connection),
+            search_connection: Some(Mutex::new(search_connection)),
             artwork_dir,
         })
+    }
+
+    fn lock_search_connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        if let Some(search_connection) = &self.search_connection {
+            return search_connection
+                .lock()
+                .map_err(|_| String::from("failed to lock search database connection"));
+        }
+
+        self.connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))
     }
 
     pub fn artwork_dir(&self) -> PathBuf {
@@ -884,7 +943,7 @@ impl Database {
         tag_ids: &[String],
     ) -> Result<LibrarySearchResult, String> {
         let trimmed = query.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && tag_ids.is_empty() {
             return Ok(LibrarySearchResult {
                 songs: Vec::new(),
                 albums: Vec::new(),
@@ -894,10 +953,7 @@ impl Database {
             });
         }
 
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| String::from("failed to lock database connection"))?;
+        let connection = self.lock_search_connection()?;
 
         let (text_query, inline_tag_names) = split_search_query(trimmed);
         let mut required_tag_ids = normalize_tag_ids(tag_ids);
@@ -1067,7 +1123,7 @@ impl Database {
 
         let mut albums = Vec::new();
         let mut artists = Vec::new();
-        if let Some(fts_query) = fts_query {
+        if let Some(fts_query) = fts_query.as_ref() {
             let mut album_statement = connection
                 .prepare(
                     "
@@ -1179,90 +1235,14 @@ impl Database {
             }
         }
 
-        let mut playlist_statement = connection
-            .prepare(
-                "
-                SELECT
-                    p.id,
-                    p.name,
-                    p.parent_id,
-                    parent.name
-                FROM playlists p
-                LEFT JOIN playlists parent ON parent.id = p.parent_id
-                WHERE p.is_folder = 0
-                  AND p.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                ORDER BY
-                    CASE
-                        WHEN p.name LIKE ?2 ESCAPE '\\' COLLATE NOCASE THEN 0
-                        ELSE 1
-                    END,
-                    p.name COLLATE NOCASE ASC,
-                    p.id ASC
-                LIMIT ?3
-                ",
-            )
-            .map_err(|error| format!("failed to prepare playlists search query: {error}"))?;
-
-        let playlist_rows = playlist_statement
-            .query_map(params![contains_pattern, prefix_pattern, limit], |row| {
-                Ok(PlaylistSearchItem {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    parent_id: row.get(2)?,
-                    parent_name: row.get(3)?,
-                    is_folder: false,
-                })
-            })
-            .map_err(|error| format!("failed to execute playlists search query: {error}"))?;
-
-        let mut playlists = Vec::new();
-        for row in playlist_rows {
-            playlists.push(
-                row.map_err(|error| format!("failed to decode playlist search row: {error}"))?,
-            );
-        }
-
-        let mut folder_statement = connection
-            .prepare(
-                "
-                SELECT
-                    p.id,
-                    p.name,
-                    p.parent_id,
-                    parent.name
-                FROM playlists p
-                LEFT JOIN playlists parent ON parent.id = p.parent_id
-                WHERE p.is_folder = 1
-                  AND p.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
-                ORDER BY
-                    CASE
-                        WHEN p.name LIKE ?2 ESCAPE '\\' COLLATE NOCASE THEN 0
-                        ELSE 1
-                    END,
-                    p.name COLLATE NOCASE ASC,
-                    p.id ASC
-                LIMIT ?3
-                ",
-            )
-            .map_err(|error| format!("failed to prepare folders search query: {error}"))?;
-
-        let folder_rows = folder_statement
-            .query_map(params![contains_pattern, prefix_pattern, limit], |row| {
-                Ok(PlaylistSearchItem {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    parent_id: row.get(2)?,
-                    parent_name: row.get(3)?,
-                    is_folder: true,
-                })
-            })
-            .map_err(|error| format!("failed to execute folders search query: {error}"))?;
-
-        let mut folders = Vec::new();
-        for row in folder_rows {
-            folders
-                .push(row.map_err(|error| format!("failed to decode folder search row: {error}"))?);
-        }
+        let (playlists, folders) = search_playlists_and_folders(
+            &connection,
+            &text_query,
+            fts_query.as_deref(),
+            limit,
+            &prefix_pattern,
+            &contains_pattern,
+        )?;
 
         Ok(LibrarySearchResult {
             songs,
@@ -1270,6 +1250,265 @@ impl Database {
             artists,
             playlists,
             folders,
+        })
+    }
+
+    pub fn search_palette(
+        &self,
+        query: &str,
+        limit: u32,
+        tag_ids: &[String],
+    ) -> Result<SearchPaletteResult, String> {
+        let started_at = Instant::now();
+        let bounded_limit = limit.clamp(1, 100);
+        let candidate_limit = bounded_limit.saturating_mul(5).clamp(50, 250);
+        let trimmed = query.trim();
+        let (text_query, _) = split_search_query(trimmed);
+        let query_text = normalize_search_text(&text_query);
+        let query_tokens = tokenize_for_search(&query_text);
+        let query_synonym_tokens = expand_tokens_with_synonyms(&query_tokens);
+        let include_rank_reason =
+            cfg!(debug_assertions) || std::env::var("BORF_SEARCH_DEBUG").is_ok();
+
+        let search_result = if trimmed.is_empty() && tag_ids.is_empty() {
+            LibrarySearchResult {
+                songs: Vec::new(),
+                albums: Vec::new(),
+                artists: Vec::new(),
+                playlists: Vec::new(),
+                folders: Vec::new(),
+            }
+        } else {
+            self.search_library(trimmed, candidate_limit, tag_ids)?
+        };
+
+        let mut search_result = search_result;
+        if !text_query.is_empty() {
+            let seed_count = search_result.songs.len()
+                + search_result.albums.len()
+                + search_result.artists.len()
+                + search_result.playlists.len()
+                + search_result.folders.len();
+            if seed_count < candidate_limit as usize {
+                for synonym in query_synonym_tokens.iter().take(3) {
+                    let synonym_result =
+                        self.search_library(synonym, candidate_limit / 2, tag_ids)?;
+                    merge_library_search_results(&mut search_result, synonym_result);
+                }
+            }
+        }
+
+        let mut candidates = Vec::<PaletteRankCandidate>::new();
+
+        for song in search_result.songs {
+            let title = song.title.clone();
+            let subtitle = format!("{} • {}", song.artist, song.album);
+            let lexical = lexical_similarity(&query_text, &title, Some(&subtitle));
+            candidates.push(PaletteRankCandidate {
+                item: SearchPaletteItem {
+                    kind: SearchPaletteItemKind::Song,
+                    id: song.id.clone(),
+                    title,
+                    subtitle: Some(subtitle),
+                    score: 0.0,
+                    rank_reason: None,
+                    song: Some(song),
+                    album: None,
+                    artist: None,
+                    playlist: None,
+                    action_id: None,
+                },
+                lexical_score: lexical,
+                final_score: lexical,
+                rank_reason: None,
+            });
+        }
+
+        for album in search_result.albums {
+            let title = album.album.clone();
+            let subtitle = format!("Album • {}", album.album_artist);
+            let lexical = lexical_similarity(&query_text, &title, Some(&subtitle));
+            candidates.push(PaletteRankCandidate {
+                item: SearchPaletteItem {
+                    kind: SearchPaletteItemKind::Album,
+                    id: format!("album:{}::{}", album.album, album.album_artist),
+                    title,
+                    subtitle: Some(subtitle),
+                    score: 0.0,
+                    rank_reason: None,
+                    song: None,
+                    album: Some(SearchPaletteAlbumRef {
+                        album: album.album,
+                        album_artist: album.album_artist,
+                    }),
+                    artist: None,
+                    playlist: None,
+                    action_id: None,
+                },
+                lexical_score: lexical,
+                final_score: lexical,
+                rank_reason: None,
+            });
+        }
+
+        for artist in search_result.artists {
+            let title = artist.artist.clone();
+            let subtitle = format!(
+                "Artist • {} songs • {} albums",
+                artist.song_count, artist.album_count
+            );
+            let lexical = lexical_similarity(&query_text, &title, Some(&subtitle));
+            candidates.push(PaletteRankCandidate {
+                item: SearchPaletteItem {
+                    kind: SearchPaletteItemKind::Artist,
+                    id: format!("artist:{}", artist.artist),
+                    title: artist.artist.clone(),
+                    subtitle: Some(subtitle),
+                    score: 0.0,
+                    rank_reason: None,
+                    song: None,
+                    album: None,
+                    artist: Some(artist.artist),
+                    playlist: None,
+                    action_id: None,
+                },
+                lexical_score: lexical,
+                final_score: lexical,
+                rank_reason: None,
+            });
+        }
+
+        for playlist in search_result.playlists {
+            let title = playlist.name.clone();
+            let subtitle = playlist
+                .parent_name
+                .as_ref()
+                .map(|parent_name| format!("Playlist • {}", parent_name))
+                .or_else(|| Some(String::from("Playlist")));
+            let lexical = lexical_similarity(&query_text, &title, subtitle.as_deref());
+            candidates.push(PaletteRankCandidate {
+                item: SearchPaletteItem {
+                    kind: SearchPaletteItemKind::Playlist,
+                    id: format!("playlist:{}", playlist.id),
+                    title,
+                    subtitle,
+                    score: 0.0,
+                    rank_reason: None,
+                    song: None,
+                    album: None,
+                    artist: None,
+                    playlist: Some(playlist),
+                    action_id: None,
+                },
+                lexical_score: lexical,
+                final_score: lexical,
+                rank_reason: None,
+            });
+        }
+
+        for folder in search_result.folders {
+            let title = folder.name.clone();
+            let subtitle = folder
+                .parent_name
+                .as_ref()
+                .map(|parent_name| format!("Folder • {}", parent_name))
+                .or_else(|| Some(String::from("Folder")));
+            let lexical = lexical_similarity(&query_text, &title, subtitle.as_deref());
+            candidates.push(PaletteRankCandidate {
+                item: SearchPaletteItem {
+                    kind: SearchPaletteItemKind::Folder,
+                    id: format!("folder:{}", folder.id),
+                    title,
+                    subtitle,
+                    score: 0.0,
+                    rank_reason: None,
+                    song: None,
+                    album: None,
+                    artist: None,
+                    playlist: Some(folder),
+                    action_id: None,
+                },
+                lexical_score: lexical,
+                final_score: lexical,
+                rank_reason: None,
+            });
+        }
+
+        for action in build_palette_actions() {
+            let lexical = lexical_similarity(&query_text, action.title, Some(action.search_text));
+            if !query_text.is_empty() && lexical < 0.12 {
+                continue;
+            }
+
+            candidates.push(PaletteRankCandidate {
+                item: SearchPaletteItem {
+                    kind: SearchPaletteItemKind::Action,
+                    id: action.id.to_string(),
+                    title: action.title.to_string(),
+                    subtitle: Some(action.subtitle.to_string()),
+                    score: 0.0,
+                    rank_reason: None,
+                    song: None,
+                    album: None,
+                    artist: None,
+                    playlist: None,
+                    action_id: Some(action.id.to_string()),
+                },
+                lexical_score: lexical,
+                final_score: lexical,
+                rank_reason: None,
+            });
+        }
+
+        candidates.sort_by(|left, right| compare_desc(left.lexical_score, right.lexical_score));
+
+        let semantic_window = candidates
+            .len()
+            .min((bounded_limit as usize).saturating_mul(5).max(50));
+        for index in 0..semantic_window {
+            let candidate = &mut candidates[index];
+            let item_tokens = tokenize_for_search(&normalize_search_text(&format!(
+                "{} {}",
+                candidate.item.title,
+                candidate.item.subtitle.clone().unwrap_or_default()
+            )));
+            let prefix_score = prefix_score(
+                &query_text,
+                &query_tokens,
+                &candidate.item.title,
+                &item_tokens,
+            );
+            let token_overlap = overlap_ratio(&query_tokens, &item_tokens);
+            let synonym_overlap = overlap_ratio(&query_synonym_tokens, &item_tokens);
+            let lexical = candidate.lexical_score.clamp(0.0, 1.0);
+            let final_score = (0.65 * lexical)
+                + (0.15 * prefix_score)
+                + (0.15 * token_overlap)
+                + (0.05 * synonym_overlap);
+
+            candidate.final_score = final_score.clamp(0.0, 1.0);
+            if include_rank_reason {
+                candidate.rank_reason = Some(format!(
+                    "lexical:{lexical:.3};prefix:{prefix_score:.3};token:{token_overlap:.3};syn:{synonym_overlap:.3}"
+                ));
+            }
+        }
+
+        candidates.sort_by(|left, right| compare_desc(left.final_score, right.final_score));
+
+        let items = candidates
+            .into_iter()
+            .take(bounded_limit as usize)
+            .map(|candidate| SearchPaletteItem {
+                score: candidate.final_score,
+                rank_reason: candidate.rank_reason,
+                ..candidate.item
+            })
+            .collect();
+
+        Ok(SearchPaletteResult {
+            items,
+            took_ms: started_at.elapsed().as_secs_f64() * 1000.0,
         })
     }
 
@@ -3736,6 +3975,426 @@ fn hydrate_song_tags(connection: &Connection, songs: &mut [SongListItem]) -> Res
     Ok(())
 }
 
+#[derive(Debug)]
+struct PaletteRankCandidate {
+    item: SearchPaletteItem,
+    lexical_score: f64,
+    final_score: f64,
+    rank_reason: Option<String>,
+}
+
+#[derive(Debug)]
+struct PaletteActionDefinition {
+    id: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    search_text: &'static str,
+}
+
+fn build_palette_actions() -> &'static [PaletteActionDefinition] {
+    const ACTIONS: [PaletteActionDefinition; 11] = [
+        PaletteActionDefinition {
+            id: "action.play_top_result",
+            title: "Play Top Result",
+            subtitle: "Play the best current match",
+            search_text: "play top result start now",
+        },
+        PaletteActionDefinition {
+            id: "action.queue_top_song",
+            title: "Queue Top Song",
+            subtitle: "Add the top matching song to Up Next",
+            search_text: "queue top song up next",
+        },
+        PaletteActionDefinition {
+            id: "action.open_songs",
+            title: "Open Songs View",
+            subtitle: "Jump to the Songs library",
+            search_text: "songs tracks library view open",
+        },
+        PaletteActionDefinition {
+            id: "action.open_albums",
+            title: "Open Albums View",
+            subtitle: "Jump to the Albums browser",
+            search_text: "albums records lp view open",
+        },
+        PaletteActionDefinition {
+            id: "action.open_artists",
+            title: "Open Artists View",
+            subtitle: "Jump to the Artists browser",
+            search_text: "artists performers bands view open",
+        },
+        PaletteActionDefinition {
+            id: "action.open_playlists",
+            title: "Open Playlists",
+            subtitle: "Jump to your playlists",
+            search_text: "playlist playlists mixes folders open",
+        },
+        PaletteActionDefinition {
+            id: "action.open_settings",
+            title: "Open Settings",
+            subtitle: "Open app settings",
+            search_text: "settings preferences prefs configuration",
+        },
+        PaletteActionDefinition {
+            id: "action.open_history",
+            title: "Open History",
+            subtitle: "Show recently played songs",
+            search_text: "history recent played listens",
+        },
+        PaletteActionDefinition {
+            id: "action.open_stats",
+            title: "Open Stats",
+            subtitle: "Show listening statistics",
+            search_text: "stats statistics analytics dashboard",
+        },
+        PaletteActionDefinition {
+            id: "action.scan_music_folder",
+            title: "Scan Music Folder",
+            subtitle: "Import songs from a folder",
+            search_text: "scan rescan import folder library files",
+        },
+        PaletteActionDefinition {
+            id: "action.import_itunes_library",
+            title: "Import iTunes Library",
+            subtitle: "Run iTunes XML import",
+            search_text: "itunes import apple music library xml",
+        },
+    ];
+
+    &ACTIONS
+}
+
+fn compare_desc(left: f64, right: f64) -> Ordering {
+    right.partial_cmp(&left).unwrap_or(Ordering::Equal)
+}
+
+fn merge_library_search_results(base: &mut LibrarySearchResult, incoming: LibrarySearchResult) {
+    let mut song_ids = base
+        .songs
+        .iter()
+        .map(|song| song.id.clone())
+        .collect::<HashSet<_>>();
+    for song in incoming.songs {
+        if song_ids.insert(song.id.clone()) {
+            base.songs.push(song);
+        }
+    }
+
+    let mut album_keys = base
+        .albums
+        .iter()
+        .map(|album| (album.album.clone(), album.album_artist.clone()))
+        .collect::<HashSet<_>>();
+    for album in incoming.albums {
+        let key = (album.album.clone(), album.album_artist.clone());
+        if album_keys.insert(key) {
+            base.albums.push(album);
+        }
+    }
+
+    let mut artist_names = base
+        .artists
+        .iter()
+        .map(|artist| artist.artist.clone())
+        .collect::<HashSet<_>>();
+    for artist in incoming.artists {
+        if artist_names.insert(artist.artist.clone()) {
+            base.artists.push(artist);
+        }
+    }
+
+    let mut playlist_ids = base
+        .playlists
+        .iter()
+        .map(|playlist| playlist.id.clone())
+        .collect::<HashSet<_>>();
+    for playlist in incoming.playlists {
+        if playlist_ids.insert(playlist.id.clone()) {
+            base.playlists.push(playlist);
+        }
+    }
+
+    let mut folder_ids = base
+        .folders
+        .iter()
+        .map(|folder| folder.id.clone())
+        .collect::<HashSet<_>>();
+    for folder in incoming.folders {
+        if folder_ids.insert(folder.id.clone()) {
+            base.folders.push(folder);
+        }
+    }
+}
+
+fn normalize_search_text(input: &str) -> String {
+    input
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn tokenize_for_search(input: &str) -> Vec<String> {
+    input
+        .split_whitespace()
+        .map(str::to_string)
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn synonyms_for_token(token: &str) -> &'static [&'static str] {
+    match token {
+        "song" => &["track", "tune"],
+        "track" => &["song", "tune"],
+        "tune" => &["song", "track"],
+        "album" => &["record", "lp"],
+        "artist" => &["performer", "band"],
+        "playlist" => &["mix", "queue"],
+        "queue" => &["playlist", "upnext"],
+        "stats" => &["statistics", "analytics"],
+        "settings" => &["preferences", "prefs"],
+        "history" => &["recent", "plays"],
+        "scan" => &["import", "rescan"],
+        "itunes" => &["apple", "xml"],
+        _ => &[],
+    }
+}
+
+fn expand_tokens_with_synonyms(tokens: &[String]) -> Vec<String> {
+    let original = tokens.iter().map(String::as_str).collect::<HashSet<_>>();
+    let mut expanded = HashSet::<String>::new();
+
+    for token in tokens {
+        for synonym in synonyms_for_token(token) {
+            if !original.contains(synonym) {
+                expanded.insert((*synonym).to_string());
+            }
+        }
+    }
+
+    expanded.into_iter().collect()
+}
+
+fn overlap_ratio(query_tokens: &[String], item_tokens: &[String]) -> f64 {
+    if query_tokens.is_empty() || item_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let item_set = item_tokens
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let query_set = query_tokens
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+
+    if query_set.is_empty() {
+        return 0.0;
+    }
+
+    let matches = query_set
+        .iter()
+        .filter(|token| item_set.contains(**token))
+        .count();
+
+    matches as f64 / query_set.len() as f64
+}
+
+fn prefix_score(
+    query_text: &str,
+    query_tokens: &[String],
+    title: &str,
+    item_tokens: &[String],
+) -> f64 {
+    if query_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let normalized_title = normalize_search_text(title);
+    if !query_text.is_empty() && normalized_title.starts_with(query_text) {
+        return 1.0;
+    }
+
+    let matches = query_tokens
+        .iter()
+        .filter(|query_token| {
+            item_tokens
+                .iter()
+                .any(|token| token.starts_with(query_token.as_str()))
+        })
+        .count();
+    matches as f64 / query_tokens.len() as f64
+}
+
+fn lexical_similarity(query_text: &str, title: &str, subtitle: Option<&str>) -> f64 {
+    if query_text.is_empty() {
+        return 0.45;
+    }
+
+    let normalized_title = normalize_search_text(title);
+    let normalized_subtitle = normalize_search_text(subtitle.unwrap_or_default());
+    let query_tokens = tokenize_for_search(query_text);
+    let item_tokens = tokenize_for_search(&format!("{normalized_title} {normalized_subtitle}"));
+    let overlap = overlap_ratio(&query_tokens, &item_tokens);
+
+    let base = if normalized_title == query_text {
+        1.0
+    } else if normalized_title.starts_with(query_text) {
+        0.95
+    } else if normalized_title.contains(query_text) {
+        0.82
+    } else if !normalized_subtitle.is_empty() && normalized_subtitle.starts_with(query_text) {
+        0.72
+    } else if !normalized_subtitle.is_empty() && normalized_subtitle.contains(query_text) {
+        0.62
+    } else {
+        0.28
+    };
+
+    (base + (0.35 * overlap)).clamp(0.0, 1.0)
+}
+
+fn search_playlists_and_folders(
+    connection: &Connection,
+    text_query: &str,
+    fts_query: Option<&str>,
+    limit: u32,
+    prefix_pattern: &str,
+    contains_pattern: &str,
+) -> Result<(Vec<PlaylistSearchItem>, Vec<PlaylistSearchItem>), String> {
+    if text_query.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let fetch_items = |is_folder: bool| -> Result<Vec<PlaylistSearchItem>, String> {
+        let folder_flag = if is_folder { 1 } else { 0 };
+        if let Some(fts_query) = fts_query {
+            let mut statement = connection
+                .prepare(
+                    "
+                    SELECT
+                        p.id,
+                        p.name,
+                        p.parent_id,
+                        parent.name
+                    FROM playlists_fts
+                    INNER JOIN playlists p ON p.rowid = playlists_fts.rowid
+                    LEFT JOIN playlists parent ON parent.id = p.parent_id
+                    WHERE playlists_fts MATCH ?1
+                      AND p.is_folder = ?2
+                    ORDER BY
+                        CASE
+                            WHEN p.name LIKE ?3 ESCAPE '\\' COLLATE NOCASE THEN 0
+                            WHEN COALESCE(parent.name, '') LIKE ?3 ESCAPE '\\' COLLATE NOCASE THEN 1
+                            ELSE 2
+                        END,
+                        bm25(playlists_fts),
+                        p.name COLLATE NOCASE ASC,
+                        p.id ASC
+                    LIMIT ?4
+                    ",
+                )
+                .map_err(|error| {
+                    format!("failed to prepare playlists fts search query: {error}")
+                })?;
+
+            let rows = statement
+                .query_map(
+                    params![fts_query, folder_flag, prefix_pattern, limit],
+                    |row| {
+                        Ok(PlaylistSearchItem {
+                            id: row.get(0)?,
+                            name: row.get(1)?,
+                            parent_id: row.get(2)?,
+                            parent_name: row.get(3)?,
+                            is_folder,
+                        })
+                    },
+                )
+                .map_err(|error| {
+                    format!("failed to execute playlists fts search query: {error}")
+                })?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.map_err(|error| {
+                    format!("failed to decode playlists fts search row: {error}")
+                })?);
+            }
+            return Ok(items);
+        }
+
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT
+                    p.id,
+                    p.name,
+                    p.parent_id,
+                    parent.name
+                FROM playlists p
+                LEFT JOIN playlists parent ON parent.id = p.parent_id
+                WHERE p.is_folder = ?1
+                  AND (
+                    p.name LIKE ?2 ESCAPE '\\' COLLATE NOCASE
+                    OR COALESCE(parent.name, '') LIKE ?2 ESCAPE '\\' COLLATE NOCASE
+                  )
+                ORDER BY
+                    CASE
+                        WHEN p.name LIKE ?3 ESCAPE '\\' COLLATE NOCASE THEN 0
+                        WHEN COALESCE(parent.name, '') LIKE ?3 ESCAPE '\\' COLLATE NOCASE THEN 1
+                        ELSE 2
+                    END,
+                    p.name COLLATE NOCASE ASC,
+                    p.id ASC
+                LIMIT ?4
+                ",
+            )
+            .map_err(|error| {
+                format!("failed to prepare playlists fallback search query: {error}")
+            })?;
+
+        let rows = statement
+            .query_map(
+                params![folder_flag, contains_pattern, prefix_pattern, limit],
+                |row| {
+                    Ok(PlaylistSearchItem {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        parent_id: row.get(2)?,
+                        parent_name: row.get(3)?,
+                        is_folder,
+                    })
+                },
+            )
+            .map_err(|error| {
+                format!("failed to execute playlists fallback search query: {error}")
+            })?;
+
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row.map_err(|error| {
+                format!("failed to decode playlists fallback search row: {error}")
+            })?);
+        }
+        Ok(items)
+    };
+
+    let playlists = fetch_items(false)?;
+    let folders = fetch_items(true)?;
+    Ok((playlists, folders))
+}
+
 fn split_search_query(query: &str) -> (String, Vec<String>) {
     let mut text_terms = Vec::new();
     let mut tag_terms = Vec::new();
@@ -3798,6 +4457,32 @@ fn escape_like_pattern(input: &str) -> String {
 
 pub fn to_sqlite_timestamp(datetime: DateTime<Utc>) -> String {
     datetime.to_rfc3339()
+}
+
+fn configure_main_connection(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 2500;
+            PRAGMA temp_store = MEMORY;
+            ",
+        )
+        .map_err(|error| format!("failed to configure sqlite main connection pragmas: {error}"))
+}
+
+fn configure_search_connection(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "
+            PRAGMA busy_timeout = 2500;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA query_only = ON;
+            ",
+        )
+        .map_err(|error| format!("failed to configure sqlite search connection pragmas: {error}"))
 }
 
 fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
@@ -3887,6 +4572,17 @@ fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
         connection.execute("INSERT INTO schema_migrations (version) VALUES (7)", [])?;
     }
 
+    let migration_8_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 8)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !migration_8_applied {
+        connection.execute_batch(MIGRATION_0008)?;
+        connection.execute("INSERT INTO schema_migrations (version) VALUES (8)", [])?;
+    }
+
     Ok(())
 }
 
@@ -3905,6 +4601,7 @@ mod tests {
         run_migrations(&connection).expect("failed to run migrations");
         Database {
             connection: Mutex::new(connection),
+            search_connection: None,
             artwork_dir: PathBuf::from("/tmp"),
         }
     }
@@ -3993,6 +4690,15 @@ mod tests {
             .expect("failed to check migration 7");
         assert_eq!(migration_7_applied, 1);
 
+        let migration_8_applied: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 8",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check migration 8");
+        assert_eq!(migration_8_applied, 1);
+
         let playlist_search_index_exists: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_playlists_is_folder_name_nocase'",
@@ -4001,6 +4707,15 @@ mod tests {
             )
             .expect("failed to check playlist search index");
         assert_eq!(playlist_search_index_exists, 1);
+
+        let playlists_fts_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'playlists_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to check playlists_fts table");
+        assert_eq!(playlists_fts_exists, 1);
     }
 
     #[test]
@@ -4060,6 +4775,7 @@ mod tests {
 
         let db = Database {
             connection: Mutex::new(connection),
+            search_connection: None,
             artwork_dir: PathBuf::from("/tmp"),
         };
 
@@ -4475,6 +5191,93 @@ mod tests {
             |item| item.id == playlist.id && item.parent_name.as_deref() == Some("Road Trips")
         ));
         assert!(result.folders.iter().any(|item| item.id == folder.id));
+    }
+
+    #[test]
+    fn search_library_playlist_parent_rename_updates_fts_hits() {
+        let db = test_db();
+        let folder = db
+            .playlist_create("Road Trips", None, true)
+            .expect("failed to create parent folder");
+        let playlist = db
+            .playlist_create("Night Mix", Some(&folder.id), false)
+            .expect("failed to create playlist");
+
+        let before = db
+            .search_library("road", 25, &[])
+            .expect("failed to search before rename");
+        assert!(before.playlists.iter().any(
+            |item| item.id == playlist.id && item.parent_name.as_deref() == Some("Road Trips")
+        ));
+
+        db.playlist_rename(&folder.id, "Driving Tunes")
+            .expect("failed to rename parent folder");
+
+        let after = db
+            .search_library("driving", 25, &[])
+            .expect("failed to search after rename");
+        assert!(after
+            .playlists
+            .iter()
+            .any(|item| item.id == playlist.id
+                && item.parent_name.as_deref() == Some("Driving Tunes")));
+    }
+
+    #[test]
+    fn search_palette_supports_prefix_and_tag_scoring() {
+        let db = test_db();
+        seed_song(&db, "song-road-prefix", "Road Anthem");
+        seed_song(&db, "song-road-contains", "Night Road Mix");
+        seed_song(&db, "song-track", "Track Runner");
+
+        let chill = db
+            .tags_create("Chill", "#A8D8EA")
+            .expect("failed to create chill tag");
+        db.tags_assign(
+            &[
+                String::from("song-road-prefix"),
+                String::from("song-road-contains"),
+            ],
+            std::slice::from_ref(&chill.id),
+        )
+        .expect("failed to assign chill tags");
+
+        let road = db
+            .search_palette("road", 30, &[])
+            .expect("failed to search palette for road");
+        let song_positions = road
+            .items
+            .iter()
+            .filter_map(|item| item.song.as_ref())
+            .map(|song| song.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            song_positions.first().copied(),
+            Some("song-road-prefix"),
+            "expected prefix song to rank ahead of contains-only song"
+        );
+        assert!(road
+            .items
+            .iter()
+            .all(|item| item.score >= 0.0 && item.score <= 1.0));
+
+        let tag_filtered = db
+            .search_palette("tag:chill", 30, &[])
+            .expect("failed to search palette by inline tag");
+        assert!(tag_filtered
+            .items
+            .iter()
+            .filter_map(|item| item.song.as_ref())
+            .all(|song| song.id == "song-road-prefix" || song.id == "song-road-contains"));
+
+        let synonym_query = db
+            .search_palette("tune", 30, &[])
+            .expect("failed to search palette by semantic synonym");
+        assert!(synonym_query.items.iter().any(|item| item
+            .song
+            .as_ref()
+            .map(|song| song.id.as_str())
+            == Some("song-track")));
     }
 
     #[test]

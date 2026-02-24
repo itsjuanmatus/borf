@@ -5,6 +5,7 @@ import {
   Play,
   Repeat,
   Repeat1,
+  Search,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -50,6 +51,7 @@ interface TransportBarProps {
   onToggleUpNext: () => void;
   onVolumeChange: (volume: number) => void;
   onVolumeScrub?: (volume: number) => void;
+  onSearchOpen: () => void;
 }
 
 export function TransportBar({
@@ -69,6 +71,7 @@ export function TransportBar({
   onToggleUpNext,
   onVolumeChange,
   onVolumeScrub,
+  onSearchOpen,
 }: TransportBarProps) {
   const playbackState = usePlayerStore((state) => state.playbackState);
   const positionMs = usePlayerStore((state) => state.positionMs);
@@ -255,13 +258,27 @@ export function TransportBar({
           </div>
         </div>
 
+        {/* Search */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="ml-4 inline-flex h-7 w-7 items-center justify-center rounded-full text-cloud/50 transition-colors hover:text-cloud"
+              onClick={onSearchOpen}
+            >
+              <Search className="h-3.5 w-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Search (⌘K)</TooltipContent>
+        </Tooltip>
+
         {/* Queue toggle — far right */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
               className={cn(
-                "ml-4 inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors",
+                "ml-2 inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors",
                 upNextOpen
                   ? "bg-leaf/70 text-cloud"
                   : "text-cloud/50 hover:text-cloud",

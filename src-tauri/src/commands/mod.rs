@@ -1,7 +1,8 @@
 use crate::audio::AudioEngine;
 use crate::db::{
     self, AlbumListItem, ArtistListItem, DashboardStats, LibrarySearchResult, PlayHistoryPage,
-    PlaylistMutationResult, PlaylistNode, PlaylistTrackItem, SongListItem, Tag,
+    PlaylistMutationResult, PlaylistNode, PlaylistTrackItem, SearchPaletteResult, SongListItem,
+    Tag,
 };
 use crate::imports::itunes::{self, ItunesImportOptions, ItunesImportSummary, ItunesPreview};
 use crate::library;
@@ -128,6 +129,22 @@ pub async fn library_search(
     tauri::async_runtime::spawn_blocking(move || db.search_library(&query, limit, &tag_ids))
         .await
         .map_err(|error| format!("search task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn search_palette(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+    tag_ids: Option<Vec<String>>,
+) -> Result<SearchPaletteResult, String> {
+    let db = state.db.clone();
+    let limit = limit.unwrap_or(30);
+    let tag_ids = tag_ids.unwrap_or_default();
+
+    tauri::async_runtime::spawn_blocking(move || db.search_palette(&query, limit, &tag_ids))
+        .await
+        .map_err(|error| format!("search palette task failed: {error}"))?
 }
 
 #[tauri::command]

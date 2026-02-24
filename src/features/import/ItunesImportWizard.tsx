@@ -103,6 +103,9 @@ export function ItunesImportWizard({
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 checked={options.import_play_counts}
                 onChange={(event) => onToggleOption("import_play_counts", event.target.checked)}
               />
@@ -112,6 +115,9 @@ export function ItunesImportWizard({
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 checked={options.import_ratings}
                 onChange={(event) => onToggleOption("import_ratings", event.target.checked)}
               />
@@ -121,6 +127,9 @@ export function ItunesImportWizard({
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 checked={options.import_comments}
                 onChange={(event) => onToggleOption("import_comments", event.target.checked)}
               />
@@ -130,6 +139,9 @@ export function ItunesImportWizard({
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 checked={options.import_playlists}
                 onChange={(event) => onToggleOption("import_playlists", event.target.checked)}
               />

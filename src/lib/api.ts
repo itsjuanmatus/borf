@@ -15,6 +15,7 @@ import type {
   PlaylistTrackIdsResult,
   PlaylistTrackItem,
   PlaylistTrackPageResult,
+  SearchPaletteResult,
   SongListItem,
   SongSortField,
   SortOrder,
@@ -71,6 +72,13 @@ export const libraryApi = {
   },
   search(query: string, limit = 25, tagIds?: string[]) {
     return invokeWithPerf<LibrarySearchResult>("library_search", {
+      query,
+      limit,
+      tagIds: tagIds ?? null,
+    });
+  },
+  searchPalette(query: string, limit = 30, tagIds?: string[]) {
+    return invokeWithPerf<SearchPaletteResult>("search_palette", {
       query,
       limit,
       tagIds: tagIds ?? null,

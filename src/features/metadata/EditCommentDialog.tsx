@@ -40,6 +40,9 @@ export function EditCommentDialog({
         <textarea
           value={value}
           onChange={(event) => setValue(event.target.value)}
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           rows={5}
           className="mt-4 w-full rounded-2xl bg-sand/50 p-3 text-sm outline-none focus:ring-1 focus:ring-leaf/40"
           placeholder="Add a comment..."

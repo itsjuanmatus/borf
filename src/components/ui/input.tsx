@@ -9,6 +9,9 @@ export const Input = React.forwardRef<
     <input
       ref={ref}
       type={type}
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck={false}
       className={cn(
         "flex h-10 w-full rounded-full bg-cloud/10 px-4 py-2 text-sm text-cloud outline-none transition-all placeholder:text-muted-on-dark focus-visible:ring-1 focus-visible:ring-leaf/40",
         className,

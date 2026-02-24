@@ -23,10 +23,7 @@ import {
   Folder,
   Library,
   ListMusic,
-  LoaderCircle,
-  Search,
   Settings2,
-  Tags as TagsIcon,
   UserRound,
   Waves,
 } from "lucide-react";
@@ -34,7 +31,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { SongArtwork } from "./components/song-artwork";
 import { Button } from "./components/ui/button";
-import { Input } from "./components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 import { HistoryView } from "./features/history/HistoryView";
 import { usePlayTracking } from "./features/history/usePlayTracking";
@@ -47,6 +43,7 @@ import { DraggableSongButton } from "./features/playlists/DraggableSongButton";
 import { PlaylistSidebar } from "./features/playlists/PlaylistSidebar";
 import { PlaylistView } from "./features/playlists/PlaylistView";
 import { UpNextPanel } from "./features/queue/UpNextPanel";
+import { SearchPalette } from "./features/search/SearchPalette";
 import { StatsView } from "./features/stats/StatsView";
 import { TagsSettingsPanel } from "./features/tags/TagsSettingsPanel";
 import { audioApi, exportApi, libraryApi, mediaControlsApi, playlistApi, tagsApi } from "./lib/api";
@@ -74,6 +71,7 @@ import type {
   PlaylistTrackItem,
   RepeatMode,
   ScanProgressEvent,
+  SearchPaletteItem,
   SongListItem,
   SongSortField,
   SortOrder,
@@ -84,9 +82,10 @@ const SONG_PAGE_SIZE = 250;
 const PLAYLIST_PAGE_SIZE = 250;
 const SONG_IDS_BATCH_SIZE = 400;
 const SONG_ROW_HEIGHT = 54;
-const SEARCH_DEBOUNCE_MS = 320;
-const SEARCH_MIN_TEXT_LENGTH = 2;
+const SEARCH_DEBOUNCE_MS = 40;
+const SEARCH_MIN_TEXT_LENGTH = 1;
 const SEARCH_RESULT_LIMIT = 20;
+const PALETTE_CATALOG_PAGE_SIZE = 1000;
 const MAX_NAVIGATION_HISTORY = 100;
 const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
 const PERF_TRACE_ENABLED = (() => {
@@ -345,10 +344,10 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<LibrarySearchResult | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
+  const [isSearchPaletteOpen, setIsSearchPaletteOpen] = useState(false);
+  const [paletteCatalogSongs, setPaletteCatalogSongs] = useState<SongListItem[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagFilterIds, setSelectedTagFilterIds] = useState<string[]>([]);
-  const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
 
   const [songContextMenu, setSongContextMenu] = useState<{
     x: number;
@@ -458,7 +457,6 @@ function App() {
     [playingFromIndex, playingFromSource],
   );
 
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const songsScrollRef = useRef<HTMLDivElement | null>(null);
   const albumsScrollRef = useRef<HTMLDivElement | null>(null);
   const albumDetailScrollRef = useRef<HTMLDivElement | null>(null);
@@ -468,7 +466,6 @@ function App() {
   const playlistFolderScrollRef = useRef<HTMLDivElement | null>(null);
   const statsScrollRef = useRef<HTMLDivElement | null>(null);
   const settingsScrollRef = useRef<HTMLDivElement | null>(null);
-  const tagFilterMenuRootRef = useRef<HTMLDivElement | null>(null);
   const watcherRefreshTimeoutRef = useRef<number | null>(null);
   const activePlaylistRequestIdRef = useRef(0);
   const perfPlaylistOpenRef = useRef<{ playlistId: string; startedAt: number } | null>(null);
@@ -476,10 +473,8 @@ function App() {
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
   const queueHydrationTokenRef = useRef(0);
   const pendingQueueHydrationRef = useRef<{ token: number; promise: Promise<void> } | null>(null);
-  const searchInFlightRef = useRef(false);
-  const pendingSearchRef = useRef<{ token: number; query: string; tagIds: string[] } | null>(null);
   const latestSearchTokenRef = useRef(0);
-  const searchLoopMountedRef = useRef(true);
+  const paletteCatalogTokenRef = useRef(0);
   const scrollPositionsRef = useRef<NavigationScrollPositions>({});
   const pendingScrollRestoreRef = useRef<{
     route: NavigationRoute;
@@ -650,6 +645,12 @@ function App() {
     searchResults,
     songsByIndex,
   ]);
+  const paletteLocalSongs = useMemo(() => {
+    if (paletteCatalogSongs.length > 0) {
+      return paletteCatalogSongs;
+    }
+    return Array.from(songLookupById.values());
+  }, [paletteCatalogSongs, songLookupById]);
   const metadataTargetSongs = useMemo(
     () =>
       metadataTargetSongIds
@@ -758,6 +759,40 @@ function App() {
     setSongs,
     selectedTagFilterIds,
   ]);
+
+  const refreshPaletteCatalogSongs = useCallback(async () => {
+    const token = paletteCatalogTokenRef.current + 1;
+    paletteCatalogTokenRef.current = token;
+
+    const totalSongCount = await libraryApi.getSongCount();
+    if (totalSongCount <= 0) {
+      if (token === paletteCatalogTokenRef.current) {
+        setPaletteCatalogSongs([]);
+      }
+      return;
+    }
+
+    const songs: SongListItem[] = [];
+    for (let offset = 0; offset < totalSongCount; offset += PALETTE_CATALOG_PAGE_SIZE) {
+      const chunk = await libraryApi.getSongs({
+        limit: PALETTE_CATALOG_PAGE_SIZE,
+        offset,
+        sort: "title",
+        order: "asc",
+      });
+      if (token !== paletteCatalogTokenRef.current) {
+        return;
+      }
+      songs.push(...chunk);
+      if (chunk.length < PALETTE_CATALOG_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    if (token === paletteCatalogTokenRef.current) {
+      setPaletteCatalogSongs(songs);
+    }
+  }, []);
 
   const ensureSongPage = useCallback(
     async (page: number) => {
@@ -1144,24 +1179,34 @@ function App() {
 
       const resolvedAlbum = albums.find(
         (entry) => entry.album === album.album && entry.album_artist === album.album_artist,
-      ) ?? {
-        album: album.album,
-        album_artist: album.album_artist,
-        song_count: 0,
-        total_duration_ms: 0,
-        artwork_path: null,
-        year: null,
-        date_added: null,
-      };
+      );
+      const fallbackAlbumByName = albums
+        .filter((entry) => entry.album === album.album)
+        .sort((left, right) => {
+          if (right.song_count !== left.song_count) {
+            return right.song_count - left.song_count;
+          }
+          return left.album_artist.localeCompare(right.album_artist);
+        })[0];
+      const effectiveAlbum = resolvedAlbum ??
+        fallbackAlbumByName ?? {
+          album: album.album,
+          album_artist: album.album_artist,
+          song_count: 0,
+          total_duration_ms: 0,
+          artwork_path: null,
+          year: null,
+          date_added: null,
+        };
 
-      setSelectedAlbum(resolvedAlbum);
+      setSelectedAlbum(effectiveAlbum);
       setLoadingAlbumTracks(true);
       setAlbumTracks([]);
 
       try {
         const tracks = await libraryApi.getAlbumTracks({
-          album: album.album,
-          albumArtist: album.album_artist,
+          album: effectiveAlbum.album,
+          albumArtist: effectiveAlbum.album_artist,
         });
         setAlbumTracks(tracks);
       } finally {
@@ -2446,6 +2491,121 @@ function App() {
     }
   }, [refreshAllViews]);
 
+  const handleExecuteSearchPaletteItem = useCallback(
+    async (item: SearchPaletteItem, context: { items: SearchPaletteItem[] }) => {
+      const executeNonActionItem = async (targetItem: SearchPaletteItem | null) => {
+        if (!targetItem) {
+          return;
+        }
+
+        if (targetItem.kind === "song" && targetItem.song) {
+          setQueueSourceSongs([targetItem.song]);
+          setQueueSourceLabel("Search Palette");
+          await replaceQueueAndPlay([targetItem.song], 0);
+          return;
+        }
+
+        if (targetItem.kind === "album" && targetItem.album) {
+          await applyRoute({
+            kind: "albums-detail",
+            album: {
+              album: targetItem.album.album,
+              album_artist: targetItem.album.album_artist,
+            },
+          });
+          return;
+        }
+
+        if (targetItem.kind === "artist" && targetItem.artist) {
+          await applyRoute({
+            kind: "artists-detail",
+            artist: targetItem.artist,
+          });
+          return;
+        }
+
+        if (
+          (targetItem.kind === "playlist" || targetItem.kind === "folder") &&
+          targetItem.playlist
+        ) {
+          openPlaylist(targetItem.playlist.id);
+        }
+      };
+
+      if (item.kind !== "action") {
+        await executeNonActionItem(item);
+        return;
+      }
+
+      switch (item.action_id) {
+        case "action.play_top_result": {
+          const topResult = context.items.find((candidate) => candidate.kind !== "action") ?? null;
+          await executeNonActionItem(topResult);
+          break;
+        }
+        case "action.queue_top_song": {
+          const topSong = context.items.find((candidate) => candidate.song)?.song ?? null;
+          if (!topSong) {
+            return;
+          }
+          enqueueSongs([topSong]);
+          setStatusMessage(`Queued ${topSong.title}`);
+          break;
+        }
+        case "action.open_songs":
+          await applyRoute({ kind: "songs" });
+          break;
+        case "action.open_albums":
+          await applyRoute({ kind: "albums-list" });
+          break;
+        case "action.open_artists":
+          await applyRoute({ kind: "artists-list" });
+          break;
+        case "action.open_playlists": {
+          const fallbackPlaylistId =
+            activePlaylistId ??
+            playlists.find((playlist) => !playlist.is_folder)?.id ??
+            playlists.find((playlist) => playlist.is_folder)?.id ??
+            null;
+          if (!fallbackPlaylistId) {
+            setStatusMessage("No playlists available yet.");
+            break;
+          }
+          openPlaylist(fallbackPlaylistId);
+          break;
+        }
+        case "action.open_settings":
+          await applyRoute({ kind: "settings" });
+          break;
+        case "action.open_history":
+          await applyRoute({ kind: "history" });
+          break;
+        case "action.open_stats":
+          await applyRoute({ kind: "stats" });
+          break;
+        case "action.scan_music_folder":
+          await handlePickFolderAndScan();
+          break;
+        case "action.import_itunes_library":
+          setShowImportWizard(true);
+          setImportWizardStep(1);
+          setErrorMessage(null);
+          break;
+        default:
+          break;
+      }
+    },
+    [
+      activePlaylistId,
+      applyRoute,
+      enqueueSongs,
+      handlePickFolderAndScan,
+      openPlaylist,
+      playlists,
+      replaceQueueAndPlay,
+    ],
+  );
+
   const handleSongSortClick = useCallback(
     (field: SongSortField) => {
       const order = nextSort(songSort, songOrder, field);
@@ -2702,54 +2862,6 @@ function App() {
     shuffleEnabled,
   ]);
 
-  const runQueuedSearch = useCallback(() => {
-    if (searchInFlightRef.current) {
-      return;
-    }
-
-    const next = pendingSearchRef.current;
-    if (!next) {
-      setIsSearching(false);
-      return;
-    }
-
-    pendingSearchRef.current = null;
-    searchInFlightRef.current = true;
-
-    void libraryApi
-      .search(next.query, SEARCH_RESULT_LIMIT, next.tagIds)
-      .then((result) => {
-        if (!searchLoopMountedRef.current) {
-          return;
-        }
-        if (next.token !== latestSearchTokenRef.current) {
-          return;
-        }
-        setSearchResults(result);
-      })
-      .catch((error: unknown) => {
-        if (!searchLoopMountedRef.current) {
-          return;
-        }
-        if (next.token === latestSearchTokenRef.current) {
-          setErrorMessage(String(error));
-        }
-      })
-      .finally(() => {
-        searchInFlightRef.current = false;
-        if (!searchLoopMountedRef.current) {
-          return;
-        }
-        if (pendingSearchRef.current) {
-          runQueuedSearch();
-          return;
-        }
-        if (next.token === latestSearchTokenRef.current) {
-          setIsSearching(false);
-        }
-      });
-  }, []);
-
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedSearchQuery(searchQuery.trim());
@@ -2761,40 +2873,34 @@ function App() {
   }, [searchQuery]);
 
   useEffect(() => {
-    searchLoopMountedRef.current = true;
-    return () => {
-      searchLoopMountedRef.current = false;
-      searchInFlightRef.current = false;
-      pendingSearchRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
     const token = latestSearchTokenRef.current + 1;
     latestSearchTokenRef.current = token;
 
     if (!debouncedSearchQuery) {
-      pendingSearchRef.current = null;
       setSearchResults(null);
-      setIsSearching(false);
       return;
     }
 
     if (!canRunDebouncedSearch) {
-      pendingSearchRef.current = null;
       setSearchResults(null);
-      setIsSearching(false);
       return;
     }
 
-    pendingSearchRef.current = {
-      token,
-      query: debouncedSearchQuery,
-      tagIds: [...selectedTagFilterIds],
-    };
-    setIsSearching(true);
-    runQueuedSearch();
-  }, [canRunDebouncedSearch, debouncedSearchQuery, runQueuedSearch, selectedTagFilterIds]);
+    void libraryApi
+      .search(debouncedSearchQuery, SEARCH_RESULT_LIMIT, selectedTagFilterIds)
+      .then((result) => {
+        if (token !== latestSearchTokenRef.current) {
+          return;
+        }
+        setSearchResults(result);
+      })
+      .catch((error: unknown) => {
+        if (token !== latestSearchTokenRef.current) {
+          return;
+        }
+        setErrorMessage(String(error));
+      });
+  }, [canRunDebouncedSearch, debouncedSearchQuery, selectedTagFilterIds]);
 
   useEffect(() => {
     void audioApi.setVolume(persistedVolume).catch(() => {
@@ -2808,6 +2914,25 @@ function App() {
       .then(() => ensureSongPage(0))
       .catch((error: unknown) => setErrorMessage(String(error)));
   }, [ensureSongPage, refreshSongCount, resetSongPages]);
+
+  useEffect(() => {
+    if (!isSearchPaletteOpen) {
+      paletteCatalogTokenRef.current += 1;
+      return;
+    }
+
+    if (paletteCatalogSongs.length > 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void refreshPaletteCatalogSongs().catch((error: unknown) => setErrorMessage(String(error)));
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [isSearchPaletteOpen, paletteCatalogSongs.length, refreshPaletteCatalogSongs]);
 
   useEffect(() => {
     if (activeView === "albums") {
@@ -3067,6 +3192,9 @@ function App() {
         setImportWizardStep(1);
         setErrorMessage(null);
       }),
+      listen("search:open-palette", () => {
+        setIsSearchPaletteOpen(true);
+      }),
     ];
 
     return () => {
@@ -3092,12 +3220,16 @@ function App() {
 
       if (hasModifier && lowerKey === "k") {
         event.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        setIsSearchPaletteOpen((previous) => !previous);
         return;
       }
 
       if (!hasModifier && !event.altKey && event.key === "Escape") {
+        if (isSearchPaletteOpen) {
+          event.preventDefault();
+          setIsSearchPaletteOpen(false);
+          return;
+        }
         closeUpNext();
         return;
       }
@@ -3180,6 +3312,7 @@ function App() {
     copySelectionToClipboard,
     goBack,
     goForward,
+    isSearchPaletteOpen,
     refreshPlaylistTracks,
     selectedSongIds.length,
   ]);
@@ -3203,23 +3336,6 @@ function App() {
       window.removeEventListener("click", close);
     };
   }, [songContextMenu]);
-
-  useEffect(() => {
-    if (!showTagFilterMenu) {
-      return;
-    }
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (tagFilterMenuRootRef.current?.contains(target)) {
-        return;
-      }
-      setShowTagFilterMenu(false);
-    };
-    window.addEventListener("mousedown", close);
-    return () => {
-      window.removeEventListener("mousedown", close);
-    };
-  }, [showTagFilterMenu]);
 
   useEffect(() => {
     if (scrollRestoreTick < 0) {
@@ -3347,6 +3463,7 @@ function App() {
                 .setVolume(nextVolume)
                 .catch((error: unknown) => setErrorMessage(String(error)));
             }}
+            onSearchOpen={() => setIsSearchPaletteOpen(true)}
           />
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <Group orientation="horizontal" className="h-full w-full">
@@ -3607,315 +3724,7 @@ function App() {
                           </p>
                         </div>
                       </div>
-
-                      <div className="relative w-full max-w-xl" ref={tagFilterMenuRootRef}>
-                        <div className="flex gap-2">
-                          <div className="relative min-w-0 flex-1">
-                            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-on-dark" />
-                            <Input
-                              ref={searchInputRef}
-                              value={searchQuery}
-                              onChange={(event) => setSearchQuery(event.target.value)}
-                              placeholder="Search songs/albums/artists/playlists/folders or tag:chill (Cmd+K)"
-                              className="pl-10"
-                            />
-                          </div>
-                          <Button
-                            type="button"
-                            variant={selectedTagFilterIds.length > 0 ? "default" : "secondary"}
-                            size="sm"
-                            className="shrink-0"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setShowTagFilterMenu((previous) => !previous);
-                            }}
-                          >
-                            <TagsIcon className="mr-1 h-3.5 w-3.5" />
-                            Tags
-                            {selectedTagFilterIds.length > 0
-                              ? ` (${selectedTagFilterIds.length})`
-                              : ""}
-                          </Button>
-                        </div>
-                        {showTagFilterMenu ? (
-                          <div className="absolute right-0 top-[110%] z-40 w-64 rounded-2xl bg-cloud p-3 shadow-xl">
-                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-                              Filter Songs By Tags
-                            </p>
-                            <div className="max-h-52 space-y-1 overflow-auto">
-                              {tags.length === 0 ? (
-                                <p className="text-xs text-muted">No tags available.</p>
-                              ) : (
-                                tags.map((tag) => (
-                                  <label key={tag.id} className="flex items-center gap-2 text-sm">
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedTagFilterIds.includes(tag.id)}
-                                      onChange={(event) => {
-                                        if (event.target.checked) {
-                                          setSelectedTagFilterIds((previous) => [
-                                            ...new Set([...previous, tag.id]),
-                                          ]);
-                                        } else {
-                                          setSelectedTagFilterIds((previous) =>
-                                            previous.filter((value) => value !== tag.id),
-                                          );
-                                        }
-                                      }}
-                                    />
-                                    <span
-                                      className="h-3.5 w-3.5 rounded-full border border-border/70"
-                                      style={{ backgroundColor: tag.color }}
-                                    />
-                                    <span className="truncate">{tag.name}</span>
-                                  </label>
-                                ))
-                              )}
-                            </div>
-                            <div className="mt-3 flex justify-end gap-2">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setSelectedTagFilterIds([])}
-                              >
-                                Clear
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => setShowTagFilterMenu(false)}
-                              >
-                                Done
-                              </Button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
                     </div>
-
-                    {debouncedSearchQuery ? (
-                      <div className="absolute left-6 right-6 top-[100%] z-30 mt-2 max-h-[420px] overflow-auto rounded-2xl bg-cloud p-3 shadow-xl">
-                        {!canRunDebouncedSearch ? (
-                          <p className="text-xs text-muted">
-                            Type at least {SEARCH_MIN_TEXT_LENGTH} characters, or use tag filters.
-                          </p>
-                        ) : null}
-
-                        {canRunDebouncedSearch && isSearching ? (
-                          <div className="flex items-center gap-2 text-sm text-muted">
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                            Searching...
-                          </div>
-                        ) : null}
-
-                        {canRunDebouncedSearch && !isSearching && searchResults ? (
-                          <div className="space-y-4">
-                            <section>
-                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-                                Songs
-                              </p>
-                              <div className="space-y-1">
-                                {searchResults.songs.map((song, index) => (
-                                  <DraggableSongButton
-                                    key={song.id}
-                                    draggableId={`search-song:${song.id}`}
-                                    payload={{
-                                      type: "song",
-                                      songIds: [song.id],
-                                      source: "search",
-                                    }}
-                                    className="group/song flex w-full select-none items-center justify-between rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
-                                    onClick={() => {
-                                      setQueueSourceSongs(searchResults.songs);
-                                      setQueueSourceLabel("Search Results");
-                                      void replaceQueueAndPlay(searchResults.songs, index).catch(
-                                        (error: unknown) => setErrorMessage(String(error)),
-                                      );
-                                      setSearchQuery("");
-                                    }}
-                                  >
-                                    <span className="flex min-w-0 items-center gap-2">
-                                      <SongArtwork
-                                        artworkPath={song.artwork_path}
-                                        sizeClassName="h-8 w-8"
-                                        playLabel={`Play ${song.title}`}
-                                        onPlay={() => {
-                                          setQueueSourceSongs(searchResults.songs);
-                                          setQueueSourceLabel("Search Results");
-                                          void replaceQueueAndPlay(
-                                            searchResults.songs,
-                                            index,
-                                          ).catch((error: unknown) =>
-                                            setErrorMessage(String(error)),
-                                          );
-                                          setSearchQuery("");
-                                        }}
-                                      />
-                                      <span className="truncate">
-                                        {song.title}{" "}
-                                        <span className="text-muted">• {song.artist}</span>
-                                      </span>
-                                    </span>
-                                    <span className="flex items-center gap-2">
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="ghost"
-                                        className="h-7 px-2 text-xs"
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          addSongsToQueue([song.id]);
-                                        }}
-                                      >
-                                        Queue
-                                      </Button>
-                                      <span className="text-xs text-muted">
-                                        {formatDuration(song.duration_ms)}
-                                      </span>
-                                    </span>
-                                  </DraggableSongButton>
-                                ))}
-                                {searchResults.songs.length === 0 ? (
-                                  <p className="text-xs text-muted">No song matches.</p>
-                                ) : null}
-                              </div>
-                            </section>
-
-                            <section>
-                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-                                Albums
-                              </p>
-                              <div className="space-y-1">
-                                {searchResults.albums.map((album) => (
-                                  <button
-                                    key={`${album.album}-${album.album_artist}`}
-                                    type="button"
-                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
-                                    onClick={() => {
-                                      navigateToRoute(
-                                        {
-                                          kind: "albums-detail",
-                                          album: cloneAlbumIdentity(album),
-                                        },
-                                        { searchQuery: "" },
-                                      );
-                                    }}
-                                  >
-                                    <span className="truncate">
-                                      {album.album}{" "}
-                                      <span className="text-muted">• {album.album_artist}</span>
-                                    </span>
-                                  </button>
-                                ))}
-                                {searchResults.albums.length === 0 ? (
-                                  <p className="text-xs text-muted">No album matches.</p>
-                                ) : null}
-                              </div>
-                            </section>
-
-                            <section>
-                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-                                Artists
-                              </p>
-                              <div className="space-y-1">
-                                {searchResults.artists.map((artist) => (
-                                  <button
-                                    key={artist.artist}
-                                    type="button"
-                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
-                                    onClick={() => {
-                                      navigateToRoute(
-                                        {
-                                          kind: "artists-detail",
-                                          artist: artist.artist,
-                                        },
-                                        { searchQuery: "" },
-                                      );
-                                    }}
-                                  >
-                                    <span className="truncate">{artist.artist}</span>
-                                  </button>
-                                ))}
-                                {searchResults.artists.length === 0 ? (
-                                  <p className="text-xs text-muted">No artist matches.</p>
-                                ) : null}
-                              </div>
-                            </section>
-
-                            <section>
-                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-                                Playlists
-                              </p>
-                              <div className="space-y-1">
-                                {searchResults.playlists.map((playlist) => (
-                                  <button
-                                    key={playlist.id}
-                                    type="button"
-                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
-                                    onClick={() => {
-                                      navigateToRoute(
-                                        {
-                                          kind: "playlist",
-                                          playlistId: playlist.id,
-                                        },
-                                        { playlistReorderMode: false, searchQuery: "" },
-                                      );
-                                    }}
-                                  >
-                                    <span className="truncate">
-                                      {playlist.name}
-                                      {playlist.parent_name ? (
-                                        <span className="text-muted">
-                                          {" "}
-                                          • {playlist.parent_name}
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                  </button>
-                                ))}
-                                {searchResults.playlists.length === 0 ? (
-                                  <p className="text-xs text-muted">No playlist matches.</p>
-                                ) : null}
-                              </div>
-                            </section>
-
-                            <section>
-                              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-                                Folders
-                              </p>
-                              <div className="space-y-1">
-                                {searchResults.folders.map((folder) => (
-                                  <button
-                                    key={folder.id}
-                                    type="button"
-                                    className="w-full rounded-xl px-2 py-2 text-left text-sm hover:bg-sand/60"
-                                    onClick={() => {
-                                      navigateToRoute(
-                                        {
-                                          kind: "playlist",
-                                          playlistId: folder.id,
-                                        },
-                                        { playlistReorderMode: false, searchQuery: "" },
-                                      );
-                                    }}
-                                  >
-                                    <span className="truncate">
-                                      {folder.name}
-                                      {folder.parent_name ? (
-                                        <span className="text-muted"> • {folder.parent_name}</span>
-                                      ) : null}
-                                    </span>
-                                  </button>
-                                ))}
-                                {searchResults.folders.length === 0 ? (
-                                  <p className="text-xs text-muted">No folder matches.</p>
-                                ) : null}
-                              </div>
-                            </section>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
                   </header>
 
                   <section className="min-h-0 flex-1 px-4 pb-4 pt-2">
@@ -4319,6 +4128,10 @@ function App() {
                                 <p className="p-4 text-sm text-muted-on-dark">
                                   Loading album tracks...
                                 </p>
+                              ) : albumTracks.length === 0 ? (
+                                <p className="p-4 text-sm text-muted-on-dark">
+                                  No tracks found for this album.
+                                </p>
                               ) : (
                                 albumTracks.map((song, index) => (
                                   <button
@@ -4417,9 +4230,11 @@ function App() {
                                               });
                                             }}
                                           >
-                                            <div className="mb-3 flex h-32 items-center justify-center rounded-lg bg-cloud/10">
-                                              <Disc3 className="h-8 w-8 text-muted-on-dark" />
-                                            </div>
+                                            <SongArtwork
+                                              artworkPath={album.artwork_path}
+                                              className="mb-3"
+                                              sizeClassName="h-32 w-full"
+                                            />
                                             <p className="truncate font-medium text-cloud">
                                               {album.album}
                                             </p>
@@ -4565,6 +4380,11 @@ function App() {
                                           });
                                         }}
                                       >
+                                        <SongArtwork
+                                          artworkPath={album.artwork_path}
+                                          className="mb-3"
+                                          sizeClassName="h-28 w-full"
+                                        />
                                         <p className="truncate font-medium text-cloud">
                                           {album.album}
                                         </p>
@@ -4881,6 +4701,16 @@ function App() {
               </button>
             </div>
           ) : null}
+          <SearchPalette
+            isOpen={isSearchPaletteOpen}
+            selectedTagFilterIds={selectedTagFilterIds}
+            localSongs={paletteLocalSongs}
+            playlists={playlists}
+            tags={tags}
+            onOpenChange={setIsSearchPaletteOpen}
+            onExecuteItem={(item, context) => handleExecuteSearchPaletteItem(item, context)}
+            onError={(error) => setErrorMessage(String(error))}
+          />
           <ManageTagsDialog
             isOpen={showManageTagsDialog}
             tags={tags}

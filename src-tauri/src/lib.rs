@@ -9,6 +9,7 @@ mod state;
 use std::sync::Arc;
 use tauri::menu::{Menu, SubmenuBuilder};
 use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 
 const MENU_ID_SCAN_MUSIC_FOLDER: &str = "library.scan_music_folder";
 const MENU_ID_IMPORT_ITUNES_LIBRARY: &str = "library.import_itunes_library";
@@ -37,6 +38,37 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut(if cfg!(target_os = "macos") {
+                    "command+shift+k"
+                } else {
+                    "ctrl+shift+k"
+                })
+                .expect("failed to register global shortcuts")
+                .with_handler(|app, shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+
+                    let ctrl_shortcut =
+                        shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyK);
+                    let command_shortcut =
+                        shortcut.matches(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyK);
+                    if !ctrl_shortcut && !command_shortcut {
+                        return;
+                    }
+
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+
+                    let _ = app.emit("search:open-palette", ());
+                })
+                .build(),
+        )
         .setup(|app| {
             let app_handle = app.handle().clone();
             let database =
@@ -75,6 +107,7 @@ pub fn run() {
             commands::library_get_artists,
             commands::library_get_artist_albums,
             commands::library_search,
+            commands::search_palette,
             commands::tags_list,
             commands::tags_create,
             commands::tags_rename,

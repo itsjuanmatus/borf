@@ -38,6 +38,9 @@ export function ManageTagsDialog({
             <label key={tag.id} className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 checked={selectedTagIds.includes(tag.id)}
                 onChange={(event) => onToggleTag(tag.id, event.target.checked)}
               />
