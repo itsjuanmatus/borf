@@ -1,4 +1,4 @@
-use super::{collect_audio_files, scan_song_file, supported_audio_file};
+use super::{scan_song_file, supported_audio_file};
 use crate::db::{Database, DbSongUpsert};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
@@ -12,11 +12,21 @@ use tauri::{AppHandle, Emitter};
 
 const WATCHER_POLL_TIMEOUT: Duration = Duration::from_millis(250);
 const WATCHER_DEBOUNCE_WINDOW: Duration = Duration::from_secs(2);
+const WATCHER_BULK_CHANGE_PATH_THRESHOLD: usize = 64;
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryChangeScope {
+    File,
+    Directory,
+    Bulk,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LibraryFileChangedEvent {
     pub changed_paths: Vec<String>,
     pub reason: String,
+    pub change_scope: LibraryChangeScope,
 }
 
 enum WatcherCommand {
@@ -165,6 +175,7 @@ fn apply_pending_changes(
 ) -> Result<(), String> {
     let mut upserts = Vec::<DbSongUpsert>::new();
     let mut missing_paths = Vec::<String>::new();
+    let mut saw_directory_path = false;
     let artwork_dir = db.artwork_dir();
 
     for raw_path in pending_paths {
@@ -189,20 +200,13 @@ fn apply_pending_changes(
             }
 
             if path.is_dir() {
-                for nested_audio_file in collect_audio_files(path.as_path()) {
-                    match scan_song_file(nested_audio_file.as_path(), artwork_dir.as_path()) {
-                        Ok(Some(song)) => upserts.push(song),
-                        Ok(None) => {}
-                        Err(error) => log::warn!(
-                            "watcher failed to scan file {} in changed directory {}: {error}",
-                            nested_audio_file.display(),
-                            path.display()
-                        ),
-                    }
-                }
+                saw_directory_path = true;
                 continue;
             }
         } else {
+            if path.extension().is_none() {
+                saw_directory_path = true;
+            }
             missing_paths.push(raw_path.clone());
         }
     }
@@ -214,7 +218,7 @@ fn apply_pending_changes(
         let _ = db.mark_songs_missing_by_paths(&missing_paths)?;
     }
 
-    if upserts.is_empty() && missing_paths.is_empty() {
+    if upserts.is_empty() && missing_paths.is_empty() && !saw_directory_path {
         return Ok(());
     }
 
@@ -230,11 +234,14 @@ fn apply_pending_changes(
         reasons.join(",")
     };
 
+    let change_scope = classify_change_scope(changed_paths.len(), saw_directory_path);
+
     let _ = app_handle.emit(
         "library:file-changed",
         LibraryFileChangedEvent {
             changed_paths,
             reason,
+            change_scope,
         },
     );
 
@@ -250,9 +257,19 @@ fn reason_from_kind(kind: &EventKind) -> &'static str {
     }
 }
 
+fn classify_change_scope(path_count: usize, saw_directory_path: bool) -> LibraryChangeScope {
+    if path_count >= WATCHER_BULK_CHANGE_PATH_THRESHOLD {
+        return LibraryChangeScope::Bulk;
+    }
+    if saw_directory_path {
+        return LibraryChangeScope::Directory;
+    }
+    LibraryChangeScope::File
+}
+
 #[cfg(test)]
 mod tests {
-    use super::reason_from_kind;
+    use super::{classify_change_scope, reason_from_kind, LibraryChangeScope};
     use notify::event::{CreateKind, ModifyKind, RemoveKind};
     use notify::EventKind;
 
@@ -271,5 +288,20 @@ mod tests {
             "removed"
         );
         assert_eq!(reason_from_kind(&EventKind::Any), "changed");
+    }
+
+    #[test]
+    fn classifies_bulk_changes_when_path_count_is_large() {
+        assert_eq!(classify_change_scope(64, false), LibraryChangeScope::Bulk);
+        assert_eq!(classify_change_scope(120, true), LibraryChangeScope::Bulk);
+    }
+
+    #[test]
+    fn classifies_directory_changes_when_directory_paths_are_present() {
+        assert_eq!(
+            classify_change_scope(3, true),
+            LibraryChangeScope::Directory
+        );
+        assert_eq!(classify_change_scope(3, false), LibraryChangeScope::File);
     }
 }

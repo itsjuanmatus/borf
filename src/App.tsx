@@ -24,6 +24,7 @@ import { usePlaybackController } from "./features/app/hooks/usePlaybackControlle
 import { usePlaylistController } from "./features/app/hooks/usePlaylistController";
 import { useScrollRestoreEffect } from "./features/app/hooks/useScrollRestoreEffect";
 import { useSearchPaletteActionHandler } from "./features/app/hooks/useSearchPaletteActionHandler";
+import { useStartupBootstrap } from "./features/app/hooks/useStartupBootstrap";
 import { AppDialogLayer } from "./features/app/layout/AppDialogLayer";
 import { AppHeader } from "./features/app/layout/AppHeader";
 import { AppMainContent } from "./features/app/layout/AppMainContent";
@@ -34,12 +35,21 @@ import type { SongContextMenuState } from "./features/metadata/SongContextMenu";
 import { TransportBar } from "./features/player/TransportBar";
 import { UpNextPanel } from "./features/queue/UpNextPanel";
 import { audioApi, libraryApi } from "./lib/api";
+import { startupTrace } from "./lib/startup-trace";
 import { usePlayerStore } from "./stores/player-store";
 import { useQueueStore } from "./stores/queue-store";
 import { useSessionStore } from "./stores/session-store";
-import type { RepeatMode, ScanProgressEvent, SongListItem } from "./types";
+import type {
+  LibraryFileChangedEvent,
+  QueueRestoreMode,
+  RepeatMode,
+  ScanProgressEvent,
+  SongListItem,
+} from "./types";
 
 const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
+const WATCHER_FULL_REFRESH_COOLDOWN_MS = 10_000;
+const STARTUP_QUEUE_RESTORE_MODE: QueueRestoreMode = "lazy";
 const PERF_TRACE_ENABLED = (() => {
   const rawValue = String(import.meta.env.VITE_PERF_TRACE ?? "").toLowerCase();
   return rawValue === "1" || rawValue === "true" || rawValue === "yes";
@@ -120,6 +130,7 @@ function App() {
   const statsScrollRef = useRef<HTMLDivElement | null>(null);
   const settingsScrollRef = useRef<HTMLDivElement | null>(null);
   const watcherRefreshTimeoutRef = useRef<number | null>(null);
+  const watcherLastFullRefreshAtRef = useRef(0);
   const perfPlayRequestRef = useRef<{ songId: string; startedAt: number } | null>(null);
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
@@ -183,6 +194,10 @@ function App() {
     selectedTagFilterIds,
     setSelectedTagFilterIds,
     resetSongPages,
+    bootstrapSongs,
+    bootstrapAlbums,
+    bootstrapArtists,
+    bootstrapTags,
     refreshSongCount,
     ensureSongPage,
     loadAllSongsForCurrentSort,
@@ -236,6 +251,7 @@ function App() {
     setPlaylistReorderMode,
     dragOverlayLabel,
     dragOverlayCount,
+    bootstrapPlaylists,
     refreshPlaylists,
     refreshPlaylistTracks,
     openPlaylist,
@@ -333,6 +349,9 @@ function App() {
     currentSong,
     setQueueSourceSongs,
     setQueueSourceLabel,
+    isQueueHydrating,
+    restoreProgress,
+    bootstrapQueueRestore,
     replaceQueueAndPlay,
     playNext,
     playPrevious,
@@ -405,10 +424,15 @@ function App() {
       setErrorMessage,
     });
 
-  const refreshAllViews = useCallback(async () => {
+  const refreshSongsView = useCallback(async () => {
     resetSongPages();
     await refreshSongCount();
     await ensureSongPage(0);
+  }, [ensureSongPage, refreshSongCount, resetSongPages]);
+
+  const refreshAllViews = useCallback(async () => {
+    startupTrace("refresh.full.begin");
+    await refreshSongsView();
 
     const refreshTasks: Array<Promise<unknown>> = [
       refreshAlbums(),
@@ -420,17 +444,98 @@ function App() {
       refreshTasks.push(refreshPlaylistTracks(activePlaylistId));
     }
     await Promise.all(refreshTasks);
+    startupTrace("refresh.full.end");
   }, [
     activePlaylistId,
-    ensureSongPage,
     refreshAlbums,
     refreshArtists,
     refreshPlaylists,
     refreshPlaylistTracks,
-    refreshSongCount,
+    refreshSongsView,
     refreshTags,
-    resetSongPages,
   ]);
+
+  const refreshAllViewsWithCooldown = useCallback(async () => {
+    const now = Date.now();
+    if (now - watcherLastFullRefreshAtRef.current < WATCHER_FULL_REFRESH_COOLDOWN_MS) {
+      startupTrace("watcher.refresh.full.skipped.cooldown");
+      return false;
+    }
+    watcherLastFullRefreshAtRef.current = now;
+    await refreshAllViews();
+    return true;
+  }, [refreshAllViews]);
+
+  const refreshFromWatcherEvent = useCallback(
+    async (event: LibraryFileChangedEvent) => {
+      startupTrace(
+        "watcher.refresh.begin",
+        `${event.change_scope}:${event.reason}:${event.changed_paths.length}`,
+      );
+
+      if (event.change_scope === "bulk") {
+        const ranFullRefresh = await refreshAllViewsWithCooldown();
+        if (ranFullRefresh) {
+          startupTrace("watcher.refresh.end", "bulk:full-refresh");
+          return;
+        }
+      }
+
+      await refreshSongsView();
+
+      if (activeView === "albums") {
+        await refreshAlbums();
+        if (selectedAlbum) {
+          await openAlbum(
+            {
+              album: selectedAlbum.album,
+              album_artist: selectedAlbum.album_artist,
+            },
+            { allowToggle: false },
+          );
+        }
+      } else if (activeView === "artists") {
+        await refreshArtists();
+        if (selectedArtist) {
+          await openArtist(selectedArtist);
+          if (selectedArtistAlbum) {
+            await openArtistAlbum({
+              album: selectedArtistAlbum.album,
+              album_artist: selectedArtistAlbum.album_artist,
+            });
+          }
+        }
+      } else if (activeView === "playlist") {
+        await refreshPlaylists();
+        if (activePlaylistId) {
+          invalidatePlaylistCache(activePlaylistId);
+          await refreshPlaylistTracks(activePlaylistId);
+        }
+      } else if (activeView === "settings") {
+        await refreshTags();
+      }
+
+      startupTrace("watcher.refresh.end", event.change_scope);
+    },
+    [
+      activePlaylistId,
+      activeView,
+      invalidatePlaylistCache,
+      openAlbum,
+      openArtist,
+      openArtistAlbum,
+      refreshAlbums,
+      refreshAllViewsWithCooldown,
+      refreshArtists,
+      refreshPlaylists,
+      refreshPlaylistTracks,
+      refreshSongsView,
+      refreshTags,
+      selectedAlbum,
+      selectedArtist,
+      selectedArtistAlbum,
+    ],
+  );
   const metadataImportController = useMetadataImportController({
     songLookupById,
     loadSongsByIdsInBatches,
@@ -438,6 +543,18 @@ function App() {
     setErrorMessage,
   });
   const { itunesProgress, setItunesProgress, openImportWizard } = metadataImportController;
+
+  useStartupBootstrap({
+    activeView,
+    queueRestoreMode: STARTUP_QUEUE_RESTORE_MODE,
+    bootstrapSongs,
+    bootstrapAlbums,
+    bootstrapArtists,
+    bootstrapPlaylists,
+    bootstrapTags,
+    bootstrapQueueRestore,
+    setErrorMessage,
+  });
 
   const handlePickFolderAndScan = useCallback(async () => {
     const selected = await open({
@@ -481,7 +598,6 @@ function App() {
   });
 
   useAppEventListeners({
-    activePlaylistId,
     isScanning,
     setScanProgress,
     setStatusMessage,
@@ -489,8 +605,7 @@ function App() {
     setPlaybackState,
     setPosition,
     setItunesProgress,
-    invalidatePlaylistCache,
-    refreshAllViews,
+    refreshFromWatcherEvent,
     watcherRefreshTimeoutRef,
     tracePerf,
     perfPlayRequestRef,
@@ -639,6 +754,8 @@ function App() {
             queueLength={queue.length}
             songCount={songCount}
             upNextCount={upNext.length}
+            isQueueHydrating={isQueueHydrating}
+            queueRestoreProgress={restoreProgress}
             shuffleEnabled={shuffleEnabled}
             repeatMode={repeatMode}
             volume={persistedVolume}

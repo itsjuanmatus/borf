@@ -47,6 +47,12 @@ interface UseLibraryControllerParams {
   setErrorMessage: (message: string | null) => void;
 }
 
+type StartupTokenChecker = (token: number) => boolean;
+interface StartupTaskOptions {
+  token?: number;
+  isCurrent?: StartupTokenChecker;
+}
+
 function splitSearchQueryTerms(query: string) {
   const textTerms: string[] = [];
   let inlineTagCount = 0;
@@ -76,6 +82,13 @@ function nextSort(currentField: SongSortField, currentOrder: SortOrder, field: S
     return currentOrder === "asc" ? "desc" : "asc";
   }
   return "asc";
+}
+
+function isStartupTaskCurrent(options?: StartupTaskOptions) {
+  if (options?.token === undefined || !options.isCurrent) {
+    return true;
+  }
+  return options.isCurrent(options.token);
 }
 
 export function useLibraryController({
@@ -237,43 +250,52 @@ export function useLibraryController({
     setSongsOrderedIds([]);
   }, []);
 
-  const refreshSongCount = useCallback(async () => {
-    const count = await libraryApi.getSongCount(selectedTagFilterIds);
-    const totalSongCount =
-      selectedTagFilterIds.length > 0 ? await libraryApi.getSongCount() : count;
-    setSongCount(count);
+  const refreshSongCount = useCallback(
+    async (options?: StartupTaskOptions) => {
+      const count = await libraryApi.getSongCount(selectedTagFilterIds);
+      if (!isStartupTaskCurrent(options)) {
+        return count;
+      }
+      const totalSongCount =
+        selectedTagFilterIds.length > 0 ? await libraryApi.getSongCount() : count;
+      if (!isStartupTaskCurrent(options)) {
+        return count;
+      }
+      setSongCount(count);
 
-    if (count === 0 && totalSongCount === 0) {
-      setStatusMessage("No songs found yet. Scan a folder to begin.");
-      setSongs([]);
-      setQueue([], null);
-      setNowPlaying(null);
-      setCurrentIndex(null);
-      setPlaybackState("stopped");
-      setPosition(0, 0);
-      persistQueue([], null);
-    } else if (count === 0 && selectedTagFilterIds.length > 0) {
-      setStatusMessage("No songs match the current tag filters.");
-    } else if (selectedTagFilterIds.length > 0) {
-      setStatusMessage(
-        `Loaded ${count.toLocaleString()} song(s) matching ${selectedTagFilterIds.length} tag filter(s).`,
-      );
-    } else {
-      setStatusMessage(`Loaded ${count.toLocaleString()} song(s).`);
-    }
+      if (count === 0 && totalSongCount === 0) {
+        setStatusMessage("No songs found yet. Scan a folder to begin.");
+        setSongs([]);
+        setQueue([], null);
+        setNowPlaying(null);
+        setCurrentIndex(null);
+        setPlaybackState("stopped");
+        setPosition(0, 0);
+        persistQueue([], null);
+      } else if (count === 0 && selectedTagFilterIds.length > 0) {
+        setStatusMessage("No songs match the current tag filters.");
+      } else if (selectedTagFilterIds.length > 0) {
+        setStatusMessage(
+          `Loaded ${count.toLocaleString()} song(s) matching ${selectedTagFilterIds.length} tag filter(s).`,
+        );
+      } else {
+        setStatusMessage(`Loaded ${count.toLocaleString()} song(s).`);
+      }
 
-    return count;
-  }, [
-    persistQueue,
-    selectedTagFilterIds,
-    setCurrentIndex,
-    setNowPlaying,
-    setPlaybackState,
-    setPosition,
-    setQueue,
-    setSongs,
-    setStatusMessage,
-  ]);
+      return count;
+    },
+    [
+      persistQueue,
+      selectedTagFilterIds,
+      setCurrentIndex,
+      setNowPlaying,
+      setPlaybackState,
+      setPosition,
+      setQueue,
+      setSongs,
+      setStatusMessage,
+    ],
+  );
 
   const refreshPaletteCatalogSongs = useCallback(async () => {
     const token = paletteCatalogTokenRef.current + 1;
@@ -310,7 +332,7 @@ export function useLibraryController({
   }, []);
 
   const ensureSongPage = useCallback(
-    async (page: number) => {
+    async (page: number, options?: StartupTaskOptions) => {
       if (page < 0) {
         return;
       }
@@ -329,6 +351,9 @@ export function useLibraryController({
           order: songOrder,
           tagIds: selectedTagFilterIds,
         });
+        if (!isStartupTaskCurrent(options)) {
+          return;
+        }
 
         setSongsByIndex((previous) => {
           const next = { ...previous };
@@ -396,40 +421,88 @@ export function useLibraryController({
     return result;
   }, []);
 
-  const refreshAlbums = useCallback(async () => {
-    setIsLoadingAlbums(true);
-    try {
-      const result = await libraryApi.getAlbums({
-        limit: 5000,
-        offset: 0,
-        sort: albumSort,
-        order: albumOrder,
-      });
-      setAlbums(result);
-    } finally {
-      setIsLoadingAlbums(false);
-    }
-  }, [albumOrder, albumSort]);
+  const refreshAlbums = useCallback(
+    async (options?: StartupTaskOptions) => {
+      setIsLoadingAlbums(true);
+      try {
+        const result = await libraryApi.getAlbums({
+          limit: 5000,
+          offset: 0,
+          sort: albumSort,
+          order: albumOrder,
+        });
+        if (!isStartupTaskCurrent(options)) {
+          return;
+        }
+        setAlbums(result);
+      } finally {
+        setIsLoadingAlbums(false);
+      }
+    },
+    [albumOrder, albumSort],
+  );
 
-  const refreshArtists = useCallback(async () => {
-    setIsLoadingArtists(true);
-    try {
-      const result = await libraryApi.getArtists({
-        limit: 5000,
-        offset: 0,
-        sort: artistSort,
-        order: artistOrder,
-      });
-      setArtists(result);
-    } finally {
-      setIsLoadingArtists(false);
-    }
-  }, [artistOrder, artistSort]);
+  const refreshArtists = useCallback(
+    async (options?: StartupTaskOptions) => {
+      setIsLoadingArtists(true);
+      try {
+        const result = await libraryApi.getArtists({
+          limit: 5000,
+          offset: 0,
+          sort: artistSort,
+          order: artistOrder,
+        });
+        if (!isStartupTaskCurrent(options)) {
+          return;
+        }
+        setArtists(result);
+      } finally {
+        setIsLoadingArtists(false);
+      }
+    },
+    [artistOrder, artistSort],
+  );
 
-  const refreshTags = useCallback(async () => {
+  const refreshTags = useCallback(async (options?: StartupTaskOptions) => {
     const result = await tagsApi.list();
+    if (!isStartupTaskCurrent(options)) {
+      return;
+    }
     setTags(result);
   }, []);
+
+  const bootstrapSongs = useCallback(
+    async (token: number, isCurrent: StartupTokenChecker) => {
+      resetSongPages();
+      await refreshSongCount({ token, isCurrent });
+      if (!isCurrent(token)) {
+        return;
+      }
+      await ensureSongPage(0, { token, isCurrent });
+    },
+    [ensureSongPage, refreshSongCount, resetSongPages],
+  );
+
+  const bootstrapAlbums = useCallback(
+    async (token: number, isCurrent: StartupTokenChecker) => {
+      await refreshAlbums({ token, isCurrent });
+    },
+    [refreshAlbums],
+  );
+
+  const bootstrapArtists = useCallback(
+    async (token: number, isCurrent: StartupTokenChecker) => {
+      await refreshArtists({ token, isCurrent });
+    },
+    [refreshArtists],
+  );
+
+  const bootstrapTags = useCallback(
+    async (token: number, isCurrent: StartupTokenChecker) => {
+      await refreshTags({ token, isCurrent });
+    },
+    [refreshTags],
+  );
 
   const openAlbum = useCallback(
     async (album: AlbumIdentity, options?: { allowToggle?: boolean }) => {
@@ -726,13 +799,6 @@ export function useLibraryController({
   }, [canRunDebouncedSearch, debouncedSearchQuery, selectedTagFilterIds, setErrorMessage]);
 
   useEffect(() => {
-    resetSongPages();
-    void refreshSongCount()
-      .then(() => ensureSongPage(0))
-      .catch((error: unknown) => setErrorMessage(String(error)));
-  }, [ensureSongPage, refreshSongCount, resetSongPages, setErrorMessage]);
-
-  useEffect(() => {
     if (!isSearchPaletteOpen) {
       paletteCatalogTokenRef.current += 1;
       return;
@@ -856,6 +922,10 @@ export function useLibraryController({
     artistVirtualRows,
     artistVirtualTotalSize: artistsVirtualizer.getTotalSize(),
     resetSongPages,
+    bootstrapSongs,
+    bootstrapAlbums,
+    bootstrapArtists,
+    bootstrapTags,
     refreshSongCount,
     ensureSongPage,
     loadAllSongsForCurrentSort,

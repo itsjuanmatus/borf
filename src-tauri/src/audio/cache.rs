@@ -8,7 +8,6 @@ pub(super) struct DecodedTrack {
     pub(super) samples: Arc<[f32]>,
     pub(super) channels: u16,
     pub(super) sample_rate: u32,
-    pub(super) duration_ms: u64,
 }
 
 impl DecodedTrack {

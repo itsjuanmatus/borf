@@ -40,6 +40,19 @@ interface UsePlaylistControllerParams {
   resolveSongsByIds: (songIds: string[]) => SongListItem[];
 }
 
+type StartupTokenChecker = (token: number) => boolean;
+interface StartupTaskOptions {
+  token?: number;
+  isCurrent?: StartupTokenChecker;
+}
+
+function isStartupTaskCurrent(options?: StartupTaskOptions) {
+  if (options?.token === undefined || !options.isCurrent) {
+    return true;
+  }
+  return options.isCurrent(options.token);
+}
+
 export function usePlaylistController({
   activeView,
   activePlaylistId,
@@ -151,10 +164,23 @@ export function usePlaylistController({
 
   const selectedSongIdSet = useMemo(() => new Set(selectedSongIds), [selectedSongIds]);
 
-  const refreshPlaylists = useCallback(async () => {
-    const result = await playlistApi.list();
-    setPlaylists(result);
-  }, [setPlaylists]);
+  const refreshPlaylists = useCallback(
+    async (options?: StartupTaskOptions) => {
+      const result = await playlistApi.list();
+      if (!isStartupTaskCurrent(options)) {
+        return;
+      }
+      setPlaylists(result);
+    },
+    [setPlaylists],
+  );
+
+  const bootstrapPlaylists = useCallback(
+    async (token: number, isCurrent: StartupTokenChecker) => {
+      await refreshPlaylists({ token, isCurrent });
+    },
+    [refreshPlaylists],
+  );
 
   const ensurePlaylistPage = useCallback(
     async (playlistId: string, page: number, requestId = activePlaylistRequestIdRef.current) => {
@@ -706,10 +732,6 @@ export function usePlaylistController({
   ]);
 
   useEffect(() => {
-    void refreshPlaylists().catch((error: unknown) => setErrorMessage(String(error)));
-  }, [refreshPlaylists, setErrorMessage]);
-
-  useEffect(() => {
     if (activeView !== "playlist" || !activePlaylistId || activePlaylist?.is_folder) {
       return;
     }
@@ -746,6 +768,7 @@ export function usePlaylistController({
     setPlaylistReorderMode,
     dragOverlayLabel,
     dragOverlayCount,
+    bootstrapPlaylists,
     refreshPlaylists,
     requestPlaylistTrackRange,
     refreshPlaylistTracks,

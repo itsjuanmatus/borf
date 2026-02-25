@@ -21,13 +21,25 @@ import type {
   SortOrder,
   Tag,
 } from "../types";
+import { recordStartupIpcCall } from "./startup-trace";
 
 const PERF_TRACE_ENABLED = (() => {
   const rawValue = String(import.meta.env.VITE_PERF_TRACE ?? "").toLowerCase();
   return rawValue === "1" || rawValue === "true" || rawValue === "yes";
 })();
 
+const STARTUP_COUNTED_COMMANDS = new Set([
+  "library_get_song_count",
+  "library_get_songs",
+  "playlist_list",
+  "library_get_songs_by_ids",
+]);
+
 async function invokeWithPerf<T>(command: string, args?: Record<string, unknown>) {
+  if (STARTUP_COUNTED_COMMANDS.has(command)) {
+    recordStartupIpcCall(command);
+  }
+
   const start = PERF_TRACE_ENABLED ? performance.now() : 0;
   try {
     return await invoke<T>(command, args);

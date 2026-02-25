@@ -1,8 +1,8 @@
 use super::cache::DecodedTrackCache;
 use super::events::{AudioErrorEvent, AudioPositionEvent, AudioTrackEndedEvent};
 use super::playback::{
-    current_position_ms, emit_state, handle_pause, handle_play, handle_resume, handle_seek,
-    PlaybackContext,
+    bound_to_duration, current_position_ms, emit_state, handle_pause, handle_play, handle_resume,
+    handle_seek, PlaybackContext,
 };
 use crate::db::SongPlaybackInfo;
 use rodio::OutputStream;
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const DEFAULT_DECODED_TRACK_CACHE_BYTES: usize = 384 * 1024 * 1024;
+const PLAY_COMMAND_WARN_THRESHOLD_MS: f64 = 300.0;
 
 pub(super) enum AudioCommand {
     Play {
@@ -108,11 +109,20 @@ fn run_audio_thread(
                         start_ms,
                     )
                 });
+                let elapsed_ms = command_started_at.elapsed().as_secs_f64() * 1000.0;
                 log::debug!(
                     "audio play command completed: song_id={} elapsed_ms={:.1}",
                     song_id,
-                    command_started_at.elapsed().as_secs_f64() * 1000.0
+                    elapsed_ms
                 );
+                if elapsed_ms > PLAY_COMMAND_WARN_THRESHOLD_MS {
+                    log::warn!(
+                        "audio play command exceeded threshold: threshold_ms={} song_id={} elapsed_ms={:.1}",
+                        PLAY_COMMAND_WARN_THRESHOLD_MS,
+                        song_id,
+                        elapsed_ms
+                    );
+                }
                 if let Err(error) = &result {
                     emit_error(&app_handle, error.clone());
                 }
@@ -205,7 +215,7 @@ fn run_audio_thread(
                 continue;
             }
 
-            let current_ms = current_position_ms(current).min(current.duration_ms);
+            let current_ms = bound_to_duration(current_position_ms(current), current.duration_ms);
             let _ = app_handle.emit(
                 "audio:position-update",
                 AudioPositionEvent {

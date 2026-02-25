@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { audioApi } from "../../../lib/api";
 import { usePlayerStore } from "../../../stores/player-store";
 import type {
   PlaybackState,
   PlaylistNode,
   PlaylistTrackItem,
+  QueueRestoreMode,
   RepeatMode,
   SongListItem,
 } from "../../../types";
@@ -53,6 +54,12 @@ function fisherYatesShuffle<T>(items: T[]): T[] {
   return next;
 }
 
+const LAZY_RESTORE_WINDOW_RADIUS = 25;
+const MINIMAL_RESTORE_WINDOW_RADIUS = 5;
+const RESTORE_BACKGROUND_BATCH_SIZE = 200;
+
+type StartupTokenChecker = (token: number) => boolean;
+
 export function usePlaybackController({
   queue,
   nowPlaying,
@@ -85,8 +92,14 @@ export function usePlaybackController({
 }: UsePlaybackControllerParams) {
   const [queueSourceSongs, setQueueSourceSongs] = useState<SongListItem[]>([]);
   const [queueSourceLabel, setQueueSourceLabel] = useState<string | null>(null);
+  const [isQueueHydrating, setIsQueueHydrating] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<{
+    hydrated: number;
+    total: number;
+  } | null>(null);
 
   const queueHydrationTokenRef = useRef(0);
+  const queueRestoreTokenRef = useRef(0);
   const pendingQueueHydrationRef = useRef<{ token: number; promise: Promise<void> } | null>(null);
 
   const currentSong = useMemo(
@@ -98,6 +111,9 @@ export function usePlaybackController({
     const nextToken = queueHydrationTokenRef.current + 1;
     queueHydrationTokenRef.current = nextToken;
     pendingQueueHydrationRef.current = null;
+    queueRestoreTokenRef.current += 1;
+    setIsQueueHydrating(false);
+    setRestoreProgress(null);
     return nextToken;
   }, []);
 
@@ -537,6 +553,184 @@ export function usePlaybackController({
     ],
   );
 
+  const bootstrapQueueRestore = useCallback(
+    async (
+      mode: QueueRestoreMode,
+      startupToken: number,
+      isStartupTokenCurrent: StartupTokenChecker,
+    ) => {
+      const restoreToken = queueRestoreTokenRef.current + 1;
+      queueRestoreTokenRef.current = restoreToken;
+      const total = queueSongIds.length;
+      const isRestoreCurrent = () =>
+        queueRestoreTokenRef.current === restoreToken && isStartupTokenCurrent(startupToken);
+
+      if (!isRestoreCurrent()) {
+        return;
+      }
+
+      if (total === 0) {
+        setQueue([], null);
+        setCurrentIndex(null);
+        setNowPlaying(null);
+        setQueueSourceSongs([]);
+        setPlayingFrom([], queueSourceLabel, 0);
+        setIsQueueHydrating(false);
+        setRestoreProgress(null);
+        return;
+      }
+
+      const safePersistedIndex =
+        queueCurrentIndex !== null && queueCurrentIndex >= 0 && queueCurrentIndex < total
+          ? queueCurrentIndex
+          : null;
+      const songById = new Map<string, SongListItem>();
+      const hydrateSongs = async (songIds: string[]) => {
+        const uniqueSongIds = Array.from(new Set(songIds));
+        if (uniqueSongIds.length === 0) {
+          return;
+        }
+        const resolvedSongs = await loadSongsByIdsInBatches(uniqueSongIds);
+        for (const song of resolvedSongs) {
+          songById.set(song.id, song);
+        }
+      };
+      const materializeQueue = () =>
+        queueSongIds
+          .map((songId) => songById.get(songId))
+          .filter((song): song is SongListItem => Boolean(song));
+      const countHydrated = () =>
+        queueSongIds.reduce((count, songId) => count + (songById.has(songId) ? 1 : 0), 0);
+      const resolveRestoredIndex = (start = 0, end = queueSongIds.length - 1) => {
+        if (safePersistedIndex === null || safePersistedIndex < start || safePersistedIndex > end) {
+          return null;
+        }
+        let restoredOffset = 0;
+        for (let index = start; index <= end; index += 1) {
+          if (!songById.has(queueSongIds[index])) {
+            continue;
+          }
+          if (index === safePersistedIndex) {
+            return restoredOffset;
+          }
+          restoredOffset += 1;
+        }
+        return null;
+      };
+      const yieldToMainThread = () =>
+        new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 0);
+        });
+
+      setIsQueueHydrating(true);
+      setRestoreProgress({ hydrated: 0, total });
+
+      if (mode === "full") {
+        await hydrateSongs(queueSongIds);
+        if (!isRestoreCurrent()) {
+          return;
+        }
+
+        const restoredQueue = materializeQueue();
+        const restoredIndex = resolveRestoredIndex();
+        setQueue(restoredQueue, restoredIndex);
+        setCurrentIndex(restoredIndex);
+        setNowPlaying(restoredIndex !== null ? (restoredQueue[restoredIndex] ?? null) : null);
+        setQueueSourceSongs(restoredQueue);
+        setPlayingFrom(
+          restoredQueue,
+          queueSourceLabel,
+          restoredIndex !== null ? restoredIndex + 1 : 0,
+        );
+        setRestoreProgress(null);
+        setIsQueueHydrating(false);
+        return;
+      }
+
+      const restoreRadius =
+        mode === "minimal" ? MINIMAL_RESTORE_WINDOW_RADIUS : LAZY_RESTORE_WINDOW_RADIUS;
+      const initialStart =
+        safePersistedIndex === null ? 0 : Math.max(0, safePersistedIndex - restoreRadius);
+      const initialEnd =
+        safePersistedIndex === null
+          ? Math.min(total - 1, restoreRadius * 2)
+          : Math.min(total - 1, safePersistedIndex + restoreRadius);
+
+      await hydrateSongs(queueSongIds.slice(initialStart, initialEnd + 1));
+      if (!isRestoreCurrent()) {
+        return;
+      }
+
+      const initialQueue = queueSongIds
+        .slice(initialStart, initialEnd + 1)
+        .map((songId) => songById.get(songId))
+        .filter((song): song is SongListItem => Boolean(song));
+      const initialIndex = resolveRestoredIndex(initialStart, initialEnd);
+
+      setQueue(initialQueue, initialIndex);
+      setCurrentIndex(initialIndex);
+      setNowPlaying(initialIndex !== null ? (initialQueue[initialIndex] ?? null) : null);
+      setQueueSourceSongs(initialQueue);
+      setPlayingFrom(initialQueue, queueSourceLabel, initialIndex !== null ? initialIndex + 1 : 0);
+      setRestoreProgress({ hydrated: countHydrated(), total });
+
+      await yieldToMainThread();
+      if (!isRestoreCurrent()) {
+        return;
+      }
+
+      const pendingSongIds = queueSongIds.filter(
+        (_songId, index) => index < initialStart || index > initialEnd,
+      );
+      for (
+        let offset = 0;
+        offset < pendingSongIds.length;
+        offset += RESTORE_BACKGROUND_BATCH_SIZE
+      ) {
+        const batch = pendingSongIds.slice(offset, offset + RESTORE_BACKGROUND_BATCH_SIZE);
+        await hydrateSongs(batch);
+        if (!isRestoreCurrent()) {
+          return;
+        }
+
+        setRestoreProgress({ hydrated: countHydrated(), total });
+        await yieldToMainThread();
+        if (!isRestoreCurrent()) {
+          return;
+        }
+      }
+
+      const restoredQueue = materializeQueue();
+      const restoredIndex = resolveRestoredIndex();
+      setQueue(restoredQueue, restoredIndex);
+      setCurrentIndex(restoredIndex);
+      setNowPlaying(restoredIndex !== null ? (restoredQueue[restoredIndex] ?? null) : null);
+      setQueueSourceSongs(restoredQueue);
+      setPlayingFrom(
+        restoredQueue,
+        queueSourceLabel,
+        restoredIndex !== null ? restoredIndex + 1 : 0,
+      );
+      setRestoreProgress({ hydrated: countHydrated(), total });
+      setIsQueueHydrating(false);
+      window.setTimeout(() => {
+        if (isRestoreCurrent()) {
+          setRestoreProgress(null);
+        }
+      }, 1500);
+    },
+    [
+      loadSongsByIdsInBatches,
+      queueCurrentIndex,
+      queueSongIds,
+      queueSourceLabel,
+      setCurrentIndex,
+      setNowPlaying,
+      setPlayingFrom,
+      setQueue,
+    ],
+  );
+
   const handleToggleShuffle = useCallback(() => {
     if (queue.length === 0 || !currentSong) {
       return;
@@ -576,50 +770,15 @@ export function usePlaybackController({
     shuffleEnabled,
   ]);
 
-  useEffect(() => {
-    if (queueSongIds.length === 0) {
-      setQueue([], null);
-      setCurrentIndex(null);
-      setNowPlaying(null);
-      return;
-    }
-
-    void loadSongsByIdsInBatches(queueSongIds)
-      .then((restoredSongs) => {
-        const restoredIndex =
-          queueCurrentIndex !== null && queueCurrentIndex < restoredSongs.length
-            ? queueCurrentIndex
-            : null;
-
-        setQueue(restoredSongs, restoredIndex);
-        setCurrentIndex(restoredIndex);
-        setNowPlaying(restoredIndex !== null ? (restoredSongs[restoredIndex] ?? null) : null);
-        setQueueSourceSongs(restoredSongs);
-        setPlayingFrom(
-          restoredSongs,
-          queueSourceLabel,
-          restoredIndex !== null ? restoredIndex + 1 : 0,
-        );
-      })
-      .catch((error: unknown) => setErrorMessage(String(error)));
-  }, [
-    loadSongsByIdsInBatches,
-    queueCurrentIndex,
-    queueSongIds,
-    queueSourceLabel,
-    setCurrentIndex,
-    setErrorMessage,
-    setNowPlaying,
-    setPlayingFrom,
-    setQueue,
-  ]);
-
   return {
     currentSong,
     queueSourceSongs,
     setQueueSourceSongs,
     queueSourceLabel,
     setQueueSourceLabel,
+    isQueueHydrating,
+    restoreProgress,
+    bootstrapQueueRestore,
     replaceQueueAndPlay,
     playSong,
     playNext,

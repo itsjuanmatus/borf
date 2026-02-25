@@ -39,6 +39,8 @@ interface TransportBarProps {
   queueLength: number;
   songCount: number;
   upNextCount: number;
+  isQueueHydrating: boolean;
+  queueRestoreProgress: { hydrated: number; total: number } | null;
   shuffleEnabled: boolean;
   repeatMode: RepeatMode;
   volume: number;
@@ -61,6 +63,8 @@ export function TransportBar({
   queueLength,
   songCount,
   upNextCount,
+  isQueueHydrating,
+  queueRestoreProgress,
   shuffleEnabled,
   repeatMode,
   volume,
@@ -258,6 +262,12 @@ export function TransportBar({
                   "Double-click a song to start"
                 )}
               </p>
+              {isQueueHydrating && queueRestoreProgress ? (
+                <p className="truncate text-[10px] text-cloud/45">
+                  Restoring queue {queueRestoreProgress.hydrated.toLocaleString()} /{" "}
+                  {queueRestoreProgress.total.toLocaleString()}
+                </p>
+              ) : null}
             </div>
             {/* Progress scrubber */}
             <div className="flex items-center gap-1.5">

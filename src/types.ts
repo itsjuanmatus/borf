@@ -26,6 +26,7 @@ export type LibraryView =
   | "history"
   | "stats";
 export type RepeatMode = "off" | "all" | "one";
+export type QueueRestoreMode = "lazy" | "full" | "minimal";
 
 export type PlaybackState = "playing" | "paused" | "stopped";
 
@@ -188,6 +189,7 @@ export interface AudioErrorEvent {
 export interface LibraryFileChangedEvent {
   changed_paths: string[];
   reason: string;
+  change_scope: "file" | "directory" | "bulk";
 }
 
 export interface PlayHistoryEntry {

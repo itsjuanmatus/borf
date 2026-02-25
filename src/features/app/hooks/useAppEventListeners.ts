@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { type MutableRefObject, useEffect } from "react";
+import { type MutableRefObject, useEffect, useRef } from "react";
 import { audioApi } from "../../../lib/api";
 import type {
   AudioErrorEvent,
@@ -13,7 +13,6 @@ import type {
 } from "../../../types";
 
 interface UseAppEventListenersParams {
-  activePlaylistId: string | null;
   isScanning: boolean;
   setScanProgress: (progress: ScanProgressEvent | null) => void;
   setStatusMessage: (message: string) => void;
@@ -21,8 +20,7 @@ interface UseAppEventListenersParams {
   setPlaybackState: (state: PlaybackState) => void;
   setPosition: (positionMs: number, durationMs: number) => void;
   setItunesProgress: (progress: ItunesImportProgress | null) => void;
-  invalidatePlaylistCache: (playlistId: string) => void;
-  refreshAllViews: () => Promise<void>;
+  refreshFromWatcherEvent: (event: LibraryFileChangedEvent) => Promise<void>;
   watcherRefreshTimeoutRef: MutableRefObject<number | null>;
   tracePerf: (label: string, startedAt: number, extra?: string) => void;
   perfPlayRequestRef: MutableRefObject<{ songId: string; startedAt: number } | null>;
@@ -41,8 +39,24 @@ interface UseAppEventListenersParams {
   setIsSearchPaletteOpen: (open: boolean) => void;
 }
 
+function scopePriority(scope: LibraryFileChangedEvent["change_scope"]) {
+  if (scope === "bulk") {
+    return 2;
+  }
+  if (scope === "directory") {
+    return 1;
+  }
+  return 0;
+}
+
+function mergeReasons(existingReason: string, incomingReason: string) {
+  const tokens = [...existingReason.split(","), ...incomingReason.split(",")]
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return Array.from(new Set(tokens)).sort().join(",");
+}
+
 export function useAppEventListeners({
-  activePlaylistId,
   isScanning,
   setScanProgress,
   setStatusMessage,
@@ -50,8 +64,7 @@ export function useAppEventListeners({
   setPlaybackState,
   setPosition,
   setItunesProgress,
-  invalidatePlaylistCache,
-  refreshAllViews,
+  refreshFromWatcherEvent,
   watcherRefreshTimeoutRef,
   tracePerf,
   perfPlayRequestRef,
@@ -69,6 +82,8 @@ export function useAppEventListeners({
   openImportWizard,
   setIsSearchPaletteOpen,
 }: UseAppEventListenersParams) {
+  const pendingWatcherEventRef = useRef<LibraryFileChangedEvent | null>(null);
+
   useEffect(() => {
     const unlisteners: Array<Promise<UnlistenFn>> = [
       listen<ScanProgressEvent>("library:scan-progress", (event) => {
@@ -121,21 +136,48 @@ export function useAppEventListeners({
           return;
         }
 
+        const incoming = event.payload;
+        const pending = pendingWatcherEventRef.current;
+        if (!pending) {
+          pendingWatcherEventRef.current = {
+            changed_paths: [...incoming.changed_paths],
+            reason: incoming.reason,
+            change_scope: incoming.change_scope,
+          };
+        } else {
+          pending.reason = mergeReasons(pending.reason, incoming.reason);
+          pending.change_scope =
+            scopePriority(incoming.change_scope) > scopePriority(pending.change_scope)
+              ? incoming.change_scope
+              : pending.change_scope;
+          pending.changed_paths = Array.from(
+            new Set([...pending.changed_paths, ...incoming.changed_paths]),
+          );
+        }
+
+        const pendingCount = pendingWatcherEventRef.current?.changed_paths.length ?? 0;
+
         setStatusMessage(
-          `Auto-sync: ${event.payload.reason} (${event.payload.changed_paths.length} path(s))`,
+          `Auto-sync: ${pendingWatcherEventRef.current?.reason ?? incoming.reason} (${pendingCount} path(s))`,
         );
 
         if (watcherRefreshTimeoutRef.current !== null) {
           window.clearTimeout(watcherRefreshTimeoutRef.current);
         }
         watcherRefreshTimeoutRef.current = window.setTimeout(() => {
-          if (activePlaylistId) {
-            invalidatePlaylistCache(activePlaylistId);
+          const pendingWatcherEvent = pendingWatcherEventRef.current;
+          pendingWatcherEventRef.current = null;
+          if (!pendingWatcherEvent) {
+            watcherRefreshTimeoutRef.current = null;
+            return;
           }
+
           void audioApi.clearDecodedCache().catch(() => {
             // Ignore cache clear errors triggered by file watcher refresh.
           });
-          void refreshAllViews().catch((error: unknown) => setErrorMessage(String(error)));
+          void refreshFromWatcherEvent(pendingWatcherEvent).catch((error: unknown) =>
+            setErrorMessage(String(error)),
+          );
           watcherRefreshTimeoutRef.current = null;
         }, 700);
       }),
@@ -153,11 +195,9 @@ export function useAppEventListeners({
       });
     };
   }, [
-    activePlaylistId,
     handleMediaKeyPause,
     handleMediaKeyPlay,
     handleTogglePlayback,
-    invalidatePlaylistCache,
     isScanning,
     onPaused,
     onPositionUpdate,
@@ -165,7 +205,7 @@ export function useAppEventListeners({
     onTrackEnded,
     playNext,
     playPrevious,
-    refreshAllViews,
+    refreshFromWatcherEvent,
     setErrorMessage,
     setItunesProgress,
     setPlaybackState,

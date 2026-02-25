@@ -70,9 +70,13 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            let startup_started_at = std::time::Instant::now();
+            log::info!("startup: initializing app state");
+
             let app_handle = app.handle().clone();
             let database =
                 Arc::new(db::Database::new(&app_handle).expect("failed to initialize database"));
+            log::info!("startup: database ready");
             let initial_volume = database
                 .get_volume()
                 .expect("failed to resolve initial volume");
@@ -80,6 +84,7 @@ pub fn run() {
                 audio::AudioEngine::new(app_handle.clone(), initial_volume)
                     .expect("failed to initialize audio engine"),
             );
+            log::info!("startup: audio engine ready");
             let library_watcher = Arc::new(
                 library::LibraryWatcher::new(app.handle().clone(), database.clone())
                     .expect("failed to initialize library watcher"),
@@ -94,6 +99,10 @@ pub fn run() {
             let mc = Arc::new(media_controls::MediaControlsManager::new(app_handle));
 
             app.manage(state::AppState::new(database, audio, library_watcher, mc));
+            log::info!(
+                "startup: setup complete in {}ms",
+                startup_started_at.elapsed().as_millis()
+            );
 
             Ok(())
         })
