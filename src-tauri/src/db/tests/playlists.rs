@@ -94,6 +94,34 @@ fn prevents_playlist_move_cycles_and_reorders_siblings() {
 }
 
 #[test]
+fn playlist_mutations_update_fts_without_sql_logic_errors() {
+    let db = test_db();
+
+    let folder_a = db
+        .playlist_create("Folder A", None, true)
+        .expect("failed to create folder a");
+    let folder_b = db
+        .playlist_create("Folder B", None, true)
+        .expect("failed to create folder b");
+    let playlist = db
+        .playlist_create("Playlist", Some(&folder_a.id), false)
+        .expect("failed to create playlist");
+
+    db.playlist_rename(&folder_a.id, "Folder A Updated")
+        .expect("failed to rename folder a");
+    db.playlist_move(&playlist.id, Some(&folder_b.id), 0)
+        .expect("failed to move playlist into folder b");
+    db.playlist_rename(&playlist.id, "Playlist Updated")
+        .expect("failed to rename playlist");
+    db.playlist_delete(&playlist.id)
+        .expect("failed to delete moved playlist");
+
+    let remaining = db.playlist_list().expect("failed to list remaining playlists");
+    assert!(remaining.iter().any(|node| node.id == folder_a.id));
+    assert!(remaining.iter().any(|node| node.id == folder_b.id));
+}
+
+#[test]
 fn duplicates_playlist_with_song_order() {
     let db = test_db();
     seed_song(&db, "song-1", "Song 1");

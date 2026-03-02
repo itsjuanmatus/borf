@@ -1,8 +1,10 @@
 use super::cache::{DecodedTrack, DecodedTrackCache, DecodedTrackSource};
 use super::decode::SymphoniaStreamingSource;
 use super::playback::{
-    bound_to_duration, choose_streaming_attempt_order, duration_from_song_metadata,
-    is_isobmff_extension, preferred_streaming_backend, StreamingBackend,
+    bound_to_duration, choose_streaming_attempt_order, compute_effective_crossfade_ms,
+    crossfade_ramp_levels, duration_from_song_metadata, is_isobmff_extension,
+    preferred_streaming_backend, resolve_transition_request, AppliedTransitionMode,
+    PlaybackTransition, StreamingBackend,
 };
 use rodio::Source;
 use std::collections::HashSet;
@@ -143,6 +145,47 @@ fn duration_policy_uses_metadata_only_for_playback_startup() {
 fn bound_to_duration_does_not_clamp_when_duration_unknown() {
     assert_eq!(bound_to_duration(5_000, 0), 5_000);
     assert_eq!(bound_to_duration(5_000, 2_000), 2_000);
+}
+
+#[test]
+fn effective_crossfade_clamps_to_half_of_each_track() {
+    assert_eq!(compute_effective_crossfade_ms(6_000, 20_000, 18_000), 6_000);
+    assert_eq!(compute_effective_crossfade_ms(8_000, 10_000, 18_000), 5_000);
+    assert_eq!(compute_effective_crossfade_ms(8_000, 18_000, 9_000), 4_500);
+    assert_eq!(compute_effective_crossfade_ms(8_000, 0, 18_000), 0);
+}
+
+#[test]
+fn crossfade_ramp_levels_progress_from_outgoing_to_incoming() {
+    let (start_outgoing, start_incoming) = crossfade_ramp_levels(0, 4_000);
+    assert!((start_outgoing - 1.0).abs() < 0.000_1);
+    assert!((start_incoming - 0.0).abs() < 0.000_1);
+
+    let (mid_outgoing, mid_incoming) = crossfade_ramp_levels(2_000, 4_000);
+    assert!((mid_outgoing - 0.5).abs() < 0.000_1);
+    assert!((mid_incoming - 0.5).abs() < 0.000_1);
+
+    let (end_outgoing, end_incoming) = crossfade_ramp_levels(4_000, 4_000);
+    assert!((end_outgoing - 0.0).abs() < 0.000_1);
+    assert!((end_incoming - 1.0).abs() < 0.000_1);
+}
+
+#[test]
+fn transition_resolution_falls_back_when_crossfade_cannot_apply() {
+    let missing_fade =
+        resolve_transition_request(PlaybackTransition::Crossfade, None, None, 10_000);
+    assert_eq!(missing_fade.mode, AppliedTransitionMode::Immediate);
+    assert_eq!(missing_fade.fallback_reason, Some("missing-crossfade-ms"));
+
+    let invalid_fade =
+        resolve_transition_request(PlaybackTransition::Crossfade, Some(0), None, 10_000);
+    assert_eq!(invalid_fade.mode, AppliedTransitionMode::Immediate);
+    assert_eq!(invalid_fade.fallback_reason, Some("invalid-crossfade-ms"));
+
+    let no_active =
+        resolve_transition_request(PlaybackTransition::Crossfade, Some(6_000), None, 10_000);
+    assert_eq!(no_active.mode, AppliedTransitionMode::Immediate);
+    assert_eq!(no_active.fallback_reason, Some("no-active-track"));
 }
 
 #[test]

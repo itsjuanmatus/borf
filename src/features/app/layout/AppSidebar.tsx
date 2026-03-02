@@ -19,9 +19,9 @@ interface AppSidebarProps {
   onNavigateHistory: () => void;
   onNavigateStats: () => void;
   onSelectPlaylist: (playlistId: string) => void;
-  onCreatePlaylist: (parentId: string | null) => void;
-  onCreateFolder: (parentId: string | null) => void;
-  onRenamePlaylist: (playlist: PlaylistNode) => void;
+  onCreatePlaylist: (parentId: string | null, name: string) => void;
+  onCreateFolder: (parentId: string | null, name: string) => void;
+  onRenamePlaylist: (playlist: PlaylistNode, nextName: string) => void;
   onDeletePlaylist: (playlist: PlaylistNode) => void;
   onDuplicatePlaylist: (playlist: PlaylistNode) => void;
   onExportM3u8: (playlist: PlaylistNode) => void;

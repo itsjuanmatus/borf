@@ -615,11 +615,7 @@ export function useLibraryController({
   );
 
   const handleRenameTag = useCallback(
-    async (tag: Tag) => {
-      const nextName = window.prompt("Rename tag", tag.name);
-      if (nextName === null) {
-        return;
-      }
+    async (tag: Tag, nextName: string) => {
       try {
         await tagsApi.rename(tag.id, nextName);
         await refreshTags();
@@ -631,11 +627,7 @@ export function useLibraryController({
   );
 
   const handleSetTagColor = useCallback(
-    async (tag: Tag) => {
-      const nextColor = window.prompt("Set tag color (#RRGGBB)", tag.color);
-      if (nextColor === null) {
-        return;
-      }
+    async (tag: Tag, nextColor: string) => {
       try {
         await tagsApi.setColor(tag.id, nextColor);
         await refreshTags();
@@ -648,10 +640,6 @@ export function useLibraryController({
 
   const handleDeleteTag = useCallback(
     async (tag: Tag) => {
-      const confirmed = window.confirm(`Delete tag "${tag.name}"?`);
-      if (!confirmed) {
-        return;
-      }
       try {
         await tagsApi.delete(tag.id);
         setSelectedTagFilterIds((previous) => previous.filter((value) => value !== tag.id));

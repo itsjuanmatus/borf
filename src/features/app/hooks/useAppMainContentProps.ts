@@ -37,6 +37,10 @@ interface UseAppMainContentPropsParams {
   handleExportPlayStatsCsv: () => Promise<void>;
   handleExportTagsCsv: () => Promise<void>;
   handleExportHierarchyMd: () => Promise<void>;
+  crossfadeEnabled: boolean;
+  crossfadeSeconds: number;
+  setCrossfadeEnabled: (enabled: boolean) => void;
+  setCrossfadeSeconds: (seconds: number) => void;
 }
 
 export function useAppMainContentProps({
@@ -62,6 +66,10 @@ export function useAppMainContentProps({
   handleExportPlayStatsCsv,
   handleExportTagsCsv,
   handleExportHierarchyMd,
+  crossfadeEnabled,
+  crossfadeSeconds,
+  setCrossfadeEnabled,
+  setCrossfadeSeconds,
 }: UseAppMainContentPropsParams): AppMainContentProps {
   const {
     songCount,
@@ -465,6 +473,10 @@ export function useAppMainContentProps({
       onExportHierarchyMd: () => {
         void handleExportHierarchyMd();
       },
+      crossfadeEnabled,
+      crossfadeSeconds,
+      onCrossfadeEnabledChange: setCrossfadeEnabled,
+      onCrossfadeSecondsChange: setCrossfadeSeconds,
     },
   };
 }

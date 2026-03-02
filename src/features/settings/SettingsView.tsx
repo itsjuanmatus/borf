@@ -1,5 +1,6 @@
 import { Download } from "lucide-react";
 import type { RefObject } from "react";
+import { Slider } from "../../components/ui/slider";
 import type { SongOptionalColumnKey, Tag } from "../../types";
 import { TagsSettingsPanel } from "../tags/TagsSettingsPanel";
 import { SongColumnsSettingsPanel } from "./SongColumnsSettingsPanel";
@@ -14,12 +15,16 @@ interface SettingsViewProps {
   onResetDefaults: () => void;
   tags: Tag[];
   onCreateTag: (name: string, color: string) => Promise<void>;
-  onRenameTag: (tag: Tag) => Promise<void>;
-  onSetTagColor: (tag: Tag) => Promise<void>;
+  onRenameTag: (tag: Tag, nextName: string) => Promise<void>;
+  onSetTagColor: (tag: Tag, nextColor: string) => Promise<void>;
   onDeleteTag: (tag: Tag) => Promise<void>;
   onExportPlayStatsCsv: () => void;
   onExportTagsCsv: () => void;
   onExportHierarchyMd: () => void;
+  crossfadeEnabled: boolean;
+  crossfadeSeconds: number;
+  onCrossfadeEnabledChange: (enabled: boolean) => void;
+  onCrossfadeSecondsChange: (seconds: number) => void;
 }
 
 export function SettingsView({
@@ -38,6 +43,10 @@ export function SettingsView({
   onExportPlayStatsCsv,
   onExportTagsCsv,
   onExportHierarchyMd,
+  crossfadeEnabled,
+  crossfadeSeconds,
+  onCrossfadeEnabledChange,
+  onCrossfadeSecondsChange,
 }: SettingsViewProps) {
   return (
     <div className="h-full rounded-2xl bg-cloud/5 p-4">
@@ -53,6 +62,49 @@ export function SettingsView({
           onMoveColumn={onMoveColumn}
           onResetDefaults={onResetDefaults}
         />
+
+        <div className="mt-8">
+          <section className="rounded-2xl bg-cloud/8 p-4">
+            <h3 className="text-base font-semibold text-cloud">Playback</h3>
+            <p className="mt-1 text-sm text-muted-on-dark">
+              Blend queue advances by overlapping song transitions.
+            </p>
+
+            <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm text-cloud">
+              <input
+                type="checkbox"
+                checked={crossfadeEnabled}
+                onChange={(event) => onCrossfadeEnabledChange(event.currentTarget.checked)}
+                className="h-4 w-4 accent-leaf"
+              />
+              <span>Crossfade Songs</span>
+            </label>
+
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted-on-dark">
+                <span>Duration</span>
+                <span className={crossfadeEnabled ? "text-cloud" : "text-muted-on-dark/70"}>
+                  {crossfadeSeconds}s
+                </span>
+              </div>
+              <Slider
+                min={1}
+                max={12}
+                step={1}
+                value={[crossfadeSeconds]}
+                disabled={!crossfadeEnabled}
+                className={crossfadeEnabled ? "" : "opacity-60"}
+                onValueChange={(value) => {
+                  const nextSeconds = value[0];
+                  if (typeof nextSeconds === "number") {
+                    onCrossfadeSecondsChange(nextSeconds);
+                  }
+                }}
+              />
+              <p className="mt-2 text-[11px] text-muted-on-dark">1 to 12 seconds</p>
+            </div>
+          </section>
+        </div>
 
         <div className="mt-8">
           <TagsSettingsPanel

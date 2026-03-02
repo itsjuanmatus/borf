@@ -26,7 +26,7 @@ interface UseAppEventListenersParams {
   perfPlayRequestRef: MutableRefObject<{ songId: string; startedAt: number } | null>;
   onPaused: () => void;
   onResumed: () => void;
-  onPositionUpdate: (positionMs: number) => void;
+  onPositionUpdate: (positionMs: number, durationMs: number) => void;
   onTrackEnded: () => void;
   triggerStatsRefresh: () => void;
   playNext: () => void;
@@ -103,7 +103,7 @@ export function useAppEventListeners({
       }),
       listen<AudioPositionEvent>("audio:position-update", (event) => {
         setPosition(event.payload.current_ms, event.payload.duration_ms);
-        onPositionUpdate(event.payload.current_ms);
+        onPositionUpdate(event.payload.current_ms, event.payload.duration_ms);
       }),
       listen<AudioTrackEndedEvent>("audio:track-ended", () => {
         onTrackEnded();

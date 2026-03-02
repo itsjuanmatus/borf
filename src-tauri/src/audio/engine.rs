@@ -1,4 +1,5 @@
 use super::events::AudioErrorEvent;
+use super::playback::PlaybackTransition;
 use super::worker::{spawn_audio_thread, AudioCommand};
 use crate::db::SongPlaybackInfo;
 use std::sync::mpsc::{self, Sender};
@@ -24,11 +25,19 @@ impl AudioEngine {
         })
     }
 
-    pub fn play(&self, song: SongPlaybackInfo, start_ms: Option<u64>) -> Result<(), String> {
+    pub fn play(
+        &self,
+        song: SongPlaybackInfo,
+        start_ms: Option<u64>,
+        transition: Option<PlaybackTransition>,
+        crossfade_ms: Option<u64>,
+    ) -> Result<(), String> {
         self.send_command_with_retry(
             move |response| AudioCommand::Play {
                 song: song.clone(),
                 start_ms,
+                transition,
+                crossfade_ms,
                 response,
             },
             "play",

@@ -47,7 +47,7 @@ export function SongArtwork({
         className,
       )}
     >
-      <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-sand to-blossom/20">
+      <div className="absolute inset-0 flex items-center justify-center bg-linear-to-br from-sand to-blossom/20">
         <Disc3 className="h-4 w-4 text-nook" />
       </div>
       {showImage ? (

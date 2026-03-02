@@ -1,8 +1,9 @@
 use super::cache::DecodedTrackCache;
 use super::events::{AudioErrorEvent, AudioPositionEvent, AudioTrackEndedEvent};
 use super::playback::{
-    bound_to_duration, current_position_ms, emit_state, handle_pause, handle_play, handle_resume,
-    handle_seek, PlaybackContext,
+    apply_master_volume, bound_to_duration, current_position_ms, emit_state, handle_pause,
+    handle_play, handle_resume, handle_seek, poll_crossfade, CrossfadeContext, PlaybackContext,
+    PlaybackTransition,
 };
 use crate::db::SongPlaybackInfo;
 use rodio::OutputStream;
@@ -21,6 +22,8 @@ pub(super) enum AudioCommand {
     Play {
         song: SongPlaybackInfo,
         start_ms: Option<u64>,
+        transition: Option<PlaybackTransition>,
+        crossfade_ms: Option<u64>,
         response: Sender<Result<(), String>>,
     },
     Pause {
@@ -78,6 +81,7 @@ fn run_audio_thread(
     let _output_stream = stream;
     let mut volume = initial_volume.clamp(0.0, 1.0);
     let mut playback: Option<PlaybackContext> = None;
+    let mut crossfade: Option<CrossfadeContext> = None;
     let mut decoded_track_cache = DecodedTrackCache::new(DEFAULT_DECODED_TRACK_CACHE_BYTES);
     let mut streaming_failures = HashSet::<String>::new();
 
@@ -88,25 +92,32 @@ fn run_audio_thread(
             Ok(AudioCommand::Play {
                 song,
                 start_ms,
+                transition,
+                crossfade_ms,
                 response,
             }) => {
                 let command_started_at = Instant::now();
                 let song_id = song.id.clone();
                 log::debug!(
-                    "audio play command received: song_id={} start_ms={:?}",
+                    "audio play command received: song_id={} start_ms={:?} transition={:?} crossfade_ms={:?}",
                     song_id,
-                    start_ms
+                    start_ms,
+                    transition,
+                    crossfade_ms
                 );
                 let result = run_command_safely("play", || {
                     handle_play(
                         &app_handle,
                         &stream_handle,
                         &mut playback,
+                        &mut crossfade,
                         &mut decoded_track_cache,
                         &mut streaming_failures,
                         volume,
                         song,
                         start_ms,
+                        transition,
+                        crossfade_ms,
                     )
                 });
                 let elapsed_ms = command_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -129,16 +140,18 @@ fn run_audio_thread(
                 let _ = response.send(result);
             }
             Ok(AudioCommand::Pause { response }) => {
-                let result =
-                    run_command_safely("pause", || handle_pause(&app_handle, &mut playback));
+                let result = run_command_safely("pause", || {
+                    handle_pause(&app_handle, &mut playback, &mut crossfade)
+                });
                 if let Err(error) = &result {
                     emit_error(&app_handle, error.clone());
                 }
                 let _ = response.send(result);
             }
             Ok(AudioCommand::Resume { response }) => {
-                let result =
-                    run_command_safely("resume", || handle_resume(&app_handle, &mut playback));
+                let result = run_command_safely("resume", || {
+                    handle_resume(&app_handle, &mut playback, &mut crossfade)
+                });
                 if let Err(error) = &result {
                     emit_error(&app_handle, error.clone());
                 }
@@ -153,6 +166,7 @@ fn run_audio_thread(
                         &app_handle,
                         &stream_handle,
                         &mut playback,
+                        &mut crossfade,
                         &mut decoded_track_cache,
                         &mut streaming_failures,
                         volume,
@@ -170,9 +184,7 @@ fn run_audio_thread(
             }) => {
                 let result = run_command_safely("set-volume", || {
                     volume = next_volume.clamp(0.0, 1.0);
-                    if let Some(current) = playback.as_mut() {
-                        current.sink.set_volume(volume);
-                    }
+                    apply_master_volume(&mut playback, &mut crossfade, volume);
                     Ok(())
                 });
                 if let Err(error) = &result {
@@ -199,10 +211,13 @@ fn run_audio_thread(
             }
         }
 
+        poll_crossfade(&mut playback, &mut crossfade, volume);
+
         if let Some(current) = playback.as_mut() {
             if current.sink.empty() {
                 let finished_song_id = current.song_id.clone();
                 playback = None;
+                poll_crossfade(&mut playback, &mut crossfade, volume);
 
                 let _ = app_handle.emit(
                     "audio:track-ended",

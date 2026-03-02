@@ -308,14 +308,9 @@ export function usePlaylistController({
     async (
       parentId: string | null,
       isFolder: boolean,
+      name: string,
       onNavigateToPlaylist?: (playlistId: string) => void,
     ) => {
-      const defaultName = isFolder ? "New Folder" : "New Playlist";
-      const name = window.prompt(isFolder ? "Folder name" : "Playlist name", defaultName);
-      if (name === null) {
-        return;
-      }
-
       try {
         const created = await playlistApi.create({
           name,
@@ -338,12 +333,7 @@ export function usePlaylistController({
   );
 
   const handleRenamePlaylist = useCallback(
-    async (playlist: PlaylistNode) => {
-      const nextName = window.prompt("Rename", playlist.name);
-      if (nextName === null) {
-        return;
-      }
-
+    async (playlist: PlaylistNode, nextName: string) => {
       try {
         await playlistApi.rename(playlist.id, nextName);
         await refreshPlaylists();
@@ -356,11 +346,6 @@ export function usePlaylistController({
 
   const handleDeletePlaylist = useCallback(
     async (playlist: PlaylistNode) => {
-      const confirmed = window.confirm(`Delete "${playlist.name}"?`);
-      if (!confirmed) {
-        return;
-      }
-
       try {
         await playlistApi.delete(playlist.id);
         removePlaylistFromStore(playlist.id);

@@ -51,6 +51,13 @@ async function invokeWithPerf<T>(command: string, args?: Record<string, unknown>
   }
 }
 
+export type AudioPlayTransition = "immediate" | "crossfade";
+
+export interface AudioPlayOptions {
+  transition?: AudioPlayTransition;
+  crossfadeMs?: number;
+}
+
 export const libraryApi = {
   scan(folderPath: string) {
     return invokeWithPerf<void>("library_scan", { folderPath });
@@ -138,8 +145,13 @@ export const tagsApi = {
 };
 
 export const audioApi = {
-  play(songId: string, startMs?: number) {
-    return invokeWithPerf<void>("audio_play", { songId, startMs });
+  play(songId: string, startMs?: number, options?: AudioPlayOptions) {
+    return invokeWithPerf<void>("audio_play", {
+      songId,
+      startMs,
+      transition: options?.transition,
+      crossfadeMs: options?.crossfadeMs,
+    });
   },
   pause() {
     return invokeWithPerf<void>("audio_pause");

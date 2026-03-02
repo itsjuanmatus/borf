@@ -78,6 +78,10 @@ function App() {
   const setSidebarSize = useSessionStore((state) => state.setSidebarSize);
   const persistedVolume = useSessionStore((state) => state.volume);
   const setPersistedVolume = useSessionStore((state) => state.setVolume);
+  const crossfadeEnabled = useSessionStore((state) => state.crossfadeEnabled);
+  const crossfadeSeconds = useSessionStore((state) => state.crossfadeSeconds);
+  const setCrossfadeEnabled = useSessionStore((state) => state.setCrossfadeEnabled);
+  const setCrossfadeSeconds = useSessionStore((state) => state.setCrossfadeSeconds);
 
   const activeView = useSessionStore((state) => state.activeView);
   const setActiveView = useSessionStore((state) => state.setActiveView);
@@ -110,7 +114,6 @@ function App() {
   const enqueueSongs = useQueueStore((state) => state.enqueueSongs);
   const reorderUpNext = useQueueStore((state) => state.reorderUpNext);
   const removeFromUpNext = useQueueStore((state) => state.removeFromUpNext);
-  const shiftNextSong = useQueueStore((state) => state.shiftNextSong);
   const setPlayingFrom = useQueueStore((state) => state.setPlayingFrom);
   const upNextOpen = useQueueStore((state) => state.isOpen);
   const openUpNext = useQueueStore((state) => state.open);
@@ -135,7 +138,13 @@ function App() {
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
 
-  const { onSongStarted, onPositionUpdate, onPaused, onResumed, onTrackEnded } = usePlayTracking();
+  const {
+    onSongStarted,
+    onPositionUpdate: onPlayTrackingPositionUpdate,
+    onPaused,
+    onResumed,
+    onTrackEnded,
+  } = usePlayTracking();
   const triggerStatsRefresh = useCallback(() => {
     setStatsRefreshSignal((current) => current + 1);
   }, []);
@@ -342,8 +351,11 @@ function App() {
     setNowPlaying,
     setPlaybackState,
     setPosition,
-    shiftNextSong,
+    upNext,
+    removeFromUpNext,
     setPlayingFrom,
+    crossfadeEnabled,
+    crossfadeSeconds,
   });
   const {
     currentSong,
@@ -355,6 +367,7 @@ function App() {
     replaceQueueAndPlay,
     playNext,
     playPrevious,
+    handlePositionTick,
     handleTogglePlayback,
     handleMediaKeyPlay,
     handleMediaKeyPause,
@@ -362,6 +375,14 @@ function App() {
     playFromPlaylistIndex,
     handleToggleShuffle,
   } = playbackController;
+
+  const handlePlaybackPositionUpdate = useCallback(
+    (positionMs: number, durationMs: number) => {
+      onPlayTrackingPositionUpdate(positionMs);
+      handlePositionTick(positionMs, durationMs);
+    },
+    [handlePositionTick, onPlayTrackingPositionUpdate],
+  );
 
   const navigationController = useNavigationController({
     activeView,
@@ -611,7 +632,7 @@ function App() {
     perfPlayRequestRef,
     onPaused,
     onResumed,
-    onPositionUpdate,
+    onPositionUpdate: handlePlaybackPositionUpdate,
     onTrackEnded,
     triggerStatsRefresh,
     playNext,
@@ -702,6 +723,10 @@ function App() {
     handleExportPlayStatsCsv,
     handleExportTagsCsv,
     handleExportHierarchyMd,
+    crossfadeEnabled,
+    crossfadeSeconds,
+    setCrossfadeEnabled,
+    setCrossfadeSeconds,
   });
 
   const dialogLayerProps = useAppDialogLayerProps({
@@ -844,8 +869,8 @@ function App() {
                       { playlistReorderMode: false },
                     );
                   }}
-                  onCreatePlaylist={(parentId) => {
-                    void handleCreatePlaylist(parentId, false, (playlistId) => {
+                  onCreatePlaylist={(parentId, name) => {
+                    void handleCreatePlaylist(parentId, false, name, (playlistId) => {
                       navigateToRoute(
                         {
                           kind: "playlist",
@@ -855,11 +880,11 @@ function App() {
                       );
                     });
                   }}
-                  onCreateFolder={(parentId) => {
-                    void handleCreatePlaylist(parentId, true);
+                  onCreateFolder={(parentId, name) => {
+                    void handleCreatePlaylist(parentId, true, name);
                   }}
-                  onRenamePlaylist={(playlist) => {
-                    void handleRenamePlaylist(playlist);
+                  onRenamePlaylist={(playlist, nextName) => {
+                    void handleRenamePlaylist(playlist, nextName);
                   }}
                   onDeletePlaylist={(playlist) => {
                     void handleDeletePlaylist(playlist);

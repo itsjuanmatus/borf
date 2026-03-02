@@ -1,4 +1,4 @@
-use crate::audio::AudioEngine;
+use crate::audio::{AudioEngine, PlaybackTransition};
 use crate::state::AppState;
 use tauri::{AppHandle, State};
 
@@ -8,9 +8,11 @@ pub async fn audio_play(
     state: State<'_, AppState>,
     song_id: String,
     start_ms: Option<u64>,
+    transition: Option<PlaybackTransition>,
+    crossfade_ms: Option<u64>,
 ) -> Result<(), String> {
     let song = state.db.get_song_for_playback(&song_id)?;
-    let result = state.audio.play(song, start_ms);
+    let result = state.audio.play(song, start_ms, transition, crossfade_ms);
 
     if let Err(error) = &result {
         AudioEngine::emit_error(&app_handle, error.clone());

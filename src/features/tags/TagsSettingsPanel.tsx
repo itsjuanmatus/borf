@@ -1,14 +1,16 @@
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../../components/ui/button";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { Input } from "../../components/ui/input";
+import { TextInputDialog } from "../../components/ui/TextInputDialog";
 import type { Tag } from "../../types";
 
 interface TagsSettingsPanelProps {
   tags: Tag[];
   onCreateTag: (name: string, color: string) => Promise<void>;
-  onRenameTag: (tag: Tag) => Promise<void>;
-  onSetTagColor: (tag: Tag) => Promise<void>;
+  onRenameTag: (tag: Tag, nextName: string) => Promise<void>;
+  onSetTagColor: (tag: Tag, nextColor: string) => Promise<void>;
   onDeleteTag: (tag: Tag) => Promise<void>;
 }
 
@@ -22,6 +24,15 @@ export function TagsSettingsPanel({
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState("#A8D8EA");
   const [isCreating, setIsCreating] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<Tag | null>(null);
+  const [colorTarget, setColorTarget] = useState<Tag | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Tag | null>(null);
+  const renameDialogKey = renameTarget
+    ? `rename-tag:${renameTarget.id}:${renameTarget.name}`
+    : "rename-tag-closed";
+  const colorDialogKey = colorTarget
+    ? `color-tag:${colorTarget.id}:${colorTarget.color}`
+    : "color-tag-closed";
 
   const handleCreate = async () => {
     if (!newTagName.trim()) {
@@ -85,7 +96,7 @@ export function TagsSettingsPanel({
                 variant="ghost"
                 size="sm"
                 className="h-7 px-2 text-xs"
-                onClick={() => void onRenameTag(tag)}
+                onClick={() => setRenameTarget(tag)}
               >
                 <Pencil className="mr-1 h-3 w-3" />
                 Rename
@@ -95,7 +106,7 @@ export function TagsSettingsPanel({
                 variant="ghost"
                 size="sm"
                 className="h-7 px-2 text-xs"
-                onClick={() => void onSetTagColor(tag)}
+                onClick={() => setColorTarget(tag)}
               >
                 Color
               </Button>
@@ -104,7 +115,7 @@ export function TagsSettingsPanel({
                 variant="ghost"
                 size="sm"
                 className="h-7 px-2 text-xs text-red-600"
-                onClick={() => void onDeleteTag(tag)}
+                onClick={() => setDeleteTarget(tag)}
               >
                 <Trash2 className="mr-1 h-3 w-3" />
                 Delete
@@ -113,6 +124,59 @@ export function TagsSettingsPanel({
           </div>
         ))}
       </div>
+
+      <TextInputDialog
+        key={renameDialogKey}
+        isOpen={Boolean(renameTarget)}
+        title="Rename Tag"
+        initialValue={renameTarget?.name ?? ""}
+        confirmLabel="Save"
+        onClose={() => setRenameTarget(null)}
+        onConfirm={(value) => {
+          if (!renameTarget) {
+            return;
+          }
+          void onRenameTag(renameTarget, value.trim());
+          setRenameTarget(null);
+        }}
+      />
+
+      <TextInputDialog
+        key={colorDialogKey}
+        isOpen={Boolean(colorTarget)}
+        title="Set Tag Color"
+        description="Use a hex color value like #A8D8EA."
+        initialValue={colorTarget?.color ?? "#A8D8EA"}
+        confirmLabel="Save"
+        onClose={() => setColorTarget(null)}
+        onConfirm={(value) => {
+          if (!colorTarget) {
+            return;
+          }
+          void onSetTagColor(colorTarget, value.trim());
+          setColorTarget(null);
+        }}
+      />
+
+      <ConfirmDialog
+        isOpen={Boolean(deleteTarget)}
+        title="Delete Tag"
+        description={
+          deleteTarget
+            ? `Delete tag "${deleteTarget.name}"? This action cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        danger
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) {
+            return;
+          }
+          void onDeleteTag(deleteTarget);
+          setDeleteTarget(null);
+        }}
+      />
     </section>
   );
 }

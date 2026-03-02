@@ -9,6 +9,8 @@ const MIGRATION_0006: &str = include_str!("../../migrations/0006_phase5_play_his
 const MIGRATION_0007: &str = include_str!("../../migrations/0007_phase6_search_indexes.sql");
 const MIGRATION_0008: &str =
     include_str!("../../migrations/0008_phase7_unified_palette_search.sql");
+const MIGRATION_0009: &str =
+    include_str!("../../migrations/0009_phase8_fix_playlist_fts_triggers.sql");
 
 pub(super) fn configure_main_connection(connection: &Connection) -> Result<(), String> {
     connection
@@ -19,6 +21,7 @@ pub(super) fn configure_main_connection(connection: &Connection) -> Result<(), S
             PRAGMA synchronous = NORMAL;
             PRAGMA busy_timeout = 2500;
             PRAGMA temp_store = MEMORY;
+            PRAGMA trusted_schema = ON;
             ",
         )
         .map_err(|error| format!("failed to configure sqlite main connection pragmas: {error}"))
@@ -132,6 +135,17 @@ pub(super) fn run_migrations(connection: &Connection) -> rusqlite::Result<()> {
     if !migration_8_applied {
         connection.execute_batch(MIGRATION_0008)?;
         connection.execute("INSERT INTO schema_migrations (version) VALUES (8)", [])?;
+    }
+
+    let migration_9_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 9)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !migration_9_applied {
+        connection.execute_batch(MIGRATION_0009)?;
+        connection.execute("INSERT INTO schema_migrations (version) VALUES (9)", [])?;
     }
 
     Ok(())

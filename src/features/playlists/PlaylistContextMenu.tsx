@@ -1,3 +1,4 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import type { PlaylistNode } from "../../types";
 
@@ -26,12 +27,58 @@ export function PlaylistContextMenu({
   onDuplicate,
   onExportM3u8,
 }: PlaylistContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const parentId = target?.is_folder ? target.id : (target?.parent_id ?? null);
+  const menuVariantKey = `${target?.is_folder ? "folder" : "playlist"}:${onExportM3u8 ? "export" : "no-export"}`;
+
+  useLayoutEffect(() => {
+    // Re-measure when the menu options change (folder vs playlist, export action availability).
+    void menuVariantKey;
+    const menu = menuRef.current;
+    if (!menu) {
+      return;
+    }
+
+    const pad = 8;
+    const { width, height } = menu.getBoundingClientRect();
+    const left = Math.max(pad, Math.min(x, window.innerWidth - width - pad));
+    const spaceBelow = window.innerHeight - y - pad;
+    const spaceAbove = y - pad;
+    const shouldOpenAbove = spaceBelow < height && spaceAbove > spaceBelow;
+    const anchorTop = shouldOpenAbove ? y - height : y;
+    const top = Math.max(pad, Math.min(anchorTop, window.innerHeight - height - pad));
+    setPosition({ left, top });
+  }, [x, y, menuVariantKey]);
+
+  useEffect(() => {
+    const reposition = () => {
+      const menu = menuRef.current;
+      if (!menu) {
+        return;
+      }
+      const pad = 8;
+      const { width, height } = menu.getBoundingClientRect();
+      const left = Math.max(pad, Math.min(x, window.innerWidth - width - pad));
+      const spaceBelow = window.innerHeight - y - pad;
+      const spaceAbove = y - pad;
+      const shouldOpenAbove = spaceBelow < height && spaceAbove > spaceBelow;
+      const anchorTop = shouldOpenAbove ? y - height : y;
+      const top = Math.max(pad, Math.min(anchorTop, window.innerHeight - height - pad));
+      setPosition({ left, top });
+    };
+
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("resize", reposition);
+    };
+  }, [x, y]);
 
   return (
     <div
-      className="fixed z-50 w-52 rounded-2xl border border-border-dark bg-night p-1 shadow-xl"
-      style={{ left: x, top: y }}
+      ref={menuRef}
+      className={`fixed z-50 w-52 rounded-2xl border border-border-dark bg-night p-1 shadow-xl transition-opacity duration-75 ${position ? "opacity-100" : "opacity-0"}`}
+      style={position ?? { left: x, top: y }}
     >
       <Button
         type="button"

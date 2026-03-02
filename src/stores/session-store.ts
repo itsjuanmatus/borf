@@ -19,6 +19,8 @@ import type {
 
 interface SessionState {
   volume: number;
+  crossfadeEnabled: boolean;
+  crossfadeSeconds: number;
   sidebarSize: number;
   activeView: LibraryView;
   activePlaylistId: string | null;
@@ -48,12 +50,16 @@ interface SessionState {
   setSongVisibleColumns: (columns: SongOptionalColumnKey[]) => void;
   setAlbumSort: (sort: AlbumSortField, order: SortOrder) => void;
   setArtistSort: (sort: ArtistSortField, order: SortOrder) => void;
+  setCrossfadeEnabled: (enabled: boolean) => void;
+  setCrossfadeSeconds: (seconds: number) => void;
 }
 
 export const useSessionStore = create<SessionState>()(
   persist(
     (set) => ({
       volume: 0.8,
+      crossfadeEnabled: false,
+      crossfadeSeconds: 6,
       sidebarSize: 22,
       activeView: "songs",
       activePlaylistId: null,
@@ -94,12 +100,19 @@ export const useSessionStore = create<SessionState>()(
         }),
       setAlbumSort: (albumSort, albumOrder) => set({ albumSort, albumOrder }),
       setArtistSort: (artistSort, artistOrder) => set({ artistSort, artistOrder }),
+      setCrossfadeEnabled: (crossfadeEnabled) => set({ crossfadeEnabled }),
+      setCrossfadeSeconds: (crossfadeSeconds) =>
+        set({
+          crossfadeSeconds: Math.max(1, Math.min(12, Math.round(crossfadeSeconds))),
+        }),
     }),
     {
       name: "borf-session",
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         volume: state.volume,
+        crossfadeEnabled: state.crossfadeEnabled,
+        crossfadeSeconds: state.crossfadeSeconds,
         sidebarSize: state.sidebarSize,
         activeView: state.activeView,
         activePlaylistId: state.activePlaylistId,
