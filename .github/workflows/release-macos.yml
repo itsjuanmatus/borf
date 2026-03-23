@@ -73,7 +73,7 @@ jobs:
         run: pnpm check
 
       - name: Build, sign, notarize, and publish release
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         with:
           tagName: ${{ github.ref_name }}
           releaseName: borf ${{ github.ref_name }}
