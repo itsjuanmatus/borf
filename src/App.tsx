@@ -122,9 +122,7 @@ function App() {
   const playingFrom = useMemo(() => {
     const ids = playingFromSourceIds.slice(playingFromIndex, playingFromIndex + 50);
     const cache = usePlayerStore.getState().songCache;
-    return ids
-      .map((id) => cache.get(id))
-      .filter((song): song is SongListItem => Boolean(song));
+    return ids.map((id) => cache.get(id)).filter((song): song is SongListItem => Boolean(song));
   }, [playingFromIndex, playingFromSourceIds]);
 
   const songsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -295,13 +293,7 @@ function App() {
       lookup.set(song.id, song);
     }
     return lookup;
-  }, [
-    activePlaylistLoadedTracks,
-    albumTracks,
-    artistAlbumTracks,
-    searchResults,
-    songsByIndex,
-  ]);
+  }, [activePlaylistLoadedTracks, albumTracks, artistAlbumTracks, searchResults, songsByIndex]);
 
   songLookupByIdRef.current = songLookupById;
 

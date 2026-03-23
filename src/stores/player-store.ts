@@ -33,7 +33,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const { songCache } = get();
     const nowPlaying =
       currentIndex !== null && currentIndex >= 0 && currentIndex < queueIds.length
-        ? songCache.get(queueIds[currentIndex]) ?? null
+        ? (songCache.get(queueIds[currentIndex]) ?? null)
         : null;
     set({ queueIds, currentIndex, nowPlaying });
   },

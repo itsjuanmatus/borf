@@ -141,7 +141,7 @@ export function usePlaybackController({
     if (currentIndex !== null) {
       const ids = usePlayerStore.getState().queueIds;
       const id = ids[currentIndex];
-      return id ? usePlayerStore.getState().songCache.get(id) ?? null : null;
+      return id ? (usePlayerStore.getState().songCache.get(id) ?? null) : null;
     }
     return null;
   }, [currentIndex, nowPlaying]);
@@ -726,11 +726,7 @@ export function usePlaybackController({
           ...sortedIds.slice(lookbehindStart, lookbehindEnd),
         ];
 
-        for (
-          let offset = 0;
-          offset < pendingIds.length;
-          offset += RESTORE_BACKGROUND_BATCH_SIZE
-        ) {
+        for (let offset = 0; offset < pendingIds.length; offset += RESTORE_BACKGROUND_BATCH_SIZE) {
           const batch = pendingIds.slice(offset, offset + RESTORE_BACKGROUND_BATCH_SIZE);
           const batchSongs = await loadSongsByIdsInBatches(batch);
           if (!isPlaybackRequestCurrent(requestToken, clickedSong.id)) {
@@ -832,15 +828,9 @@ export function usePlaybackController({
             window.setTimeout(resolve, 0);
           });
 
-        const pendingIds = orderedSongIds.filter(
-          (_id, i) => i < windowStart || i > windowEnd,
-        );
+        const pendingIds = orderedSongIds.filter((_id, i) => i < windowStart || i > windowEnd);
 
-        for (
-          let offset = 0;
-          offset < pendingIds.length;
-          offset += RESTORE_BACKGROUND_BATCH_SIZE
-        ) {
+        for (let offset = 0; offset < pendingIds.length; offset += RESTORE_BACKGROUND_BATCH_SIZE) {
           const batch = pendingIds.slice(offset, offset + RESTORE_BACKGROUND_BATCH_SIZE);
           const batchSongs = await loadSongsByIdsInBatches(batch);
           if (!isPlaybackRequestCurrent(requestToken, startSongId)) {
@@ -941,7 +931,7 @@ export function usePlaybackController({
         // Resolve now playing from cache
         const nowPlayingSong =
           safePersistedIndex !== null
-            ? usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null
+            ? (usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null)
             : null;
         setNowPlaying(nowPlayingSong);
         setPlayingFrom(
@@ -970,7 +960,7 @@ export function usePlaybackController({
 
       const nowPlayingSong =
         safePersistedIndex !== null
-          ? usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null
+          ? (usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null)
           : null;
       setNowPlaying(nowPlayingSong);
       setPlayingFrom(
