@@ -64,6 +64,9 @@ jobs:
           fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
           NODE
 
+      - name: Format injected config
+        run: pnpm biome format --write src-tauri/tauri.conf.json
+
       - name: Write App Store Connect API key
         run: |
           printf '%s' "${{ secrets.APPLE_API_KEY_P8 }}" > "$APPLE_API_KEY_PATH"
