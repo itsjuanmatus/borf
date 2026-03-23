@@ -37,6 +37,9 @@ interface UseAppMainContentPropsParams {
   handleExportPlayStatsCsv: () => Promise<void>;
   handleExportTagsCsv: () => Promise<void>;
   handleExportHierarchyMd: () => Promise<void>;
+  onCheckForUpdates: () => void;
+  isCheckingForUpdates: boolean;
+  updateStatusText: string;
   crossfadeEnabled: boolean;
   crossfadeSeconds: number;
   setCrossfadeEnabled: (enabled: boolean) => void;
@@ -66,6 +69,9 @@ export function useAppMainContentProps({
   handleExportPlayStatsCsv,
   handleExportTagsCsv,
   handleExportHierarchyMd,
+  onCheckForUpdates,
+  isCheckingForUpdates,
+  updateStatusText,
   crossfadeEnabled,
   crossfadeSeconds,
   setCrossfadeEnabled,
@@ -133,7 +139,7 @@ export function useAppMainContentProps({
 
   const {
     currentSong,
-    setQueueSourceSongs,
+    setQueueSourceIds,
     setQueueSourceLabel,
     replaceQueueAndPlay,
     playSong,
@@ -329,7 +335,7 @@ export function useAppMainContentProps({
         );
       },
       onPlayAlbumTrack: (index) => {
-        setQueueSourceSongs(albumTracks);
+        setQueueSourceIds(albumTracks.map((s) => s.id));
         setQueueSourceLabel(selectedAlbum?.album ?? "Album");
         void replaceQueueAndPlay(albumTracks, index).catch((error: unknown) =>
           setErrorMessage(String(error)),
@@ -421,7 +427,7 @@ export function useAppMainContentProps({
         });
       },
       onPlayArtistAlbumTrack: (index) => {
-        setQueueSourceSongs(artistAlbumTracks);
+        setQueueSourceIds(artistAlbumTracks.map((s) => s.id));
         setQueueSourceLabel(selectedArtistAlbum?.album ?? "Artist");
         void replaceQueueAndPlay(artistAlbumTracks, index).catch((error: unknown) =>
           setErrorMessage(String(error)),
@@ -473,6 +479,9 @@ export function useAppMainContentProps({
       onExportHierarchyMd: () => {
         void handleExportHierarchyMd();
       },
+      onCheckForUpdates,
+      isCheckingForUpdates,
+      updateStatusText,
       crossfadeEnabled,
       crossfadeSeconds,
       onCrossfadeEnabledChange: setCrossfadeEnabled,

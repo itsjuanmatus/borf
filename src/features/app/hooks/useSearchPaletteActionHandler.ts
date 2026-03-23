@@ -8,7 +8,7 @@ interface UseSearchPaletteActionHandlerParams {
   applyRoute: (route: NavigationRoute) => Promise<void>;
   openPlaylist: (playlistId: string) => void;
   setStatusMessage: (message: string) => void;
-  setQueueSourceSongs: (songs: SongListItem[]) => void;
+  setQueueSourceIds: (ids: string[]) => void;
   setQueueSourceLabel: (label: string) => void;
   replaceQueueAndPlay: (songs: SongListItem[], index: number) => Promise<void>;
   enqueueSongs: (songs: SongListItem[]) => void;
@@ -22,7 +22,7 @@ export function useSearchPaletteActionHandler({
   applyRoute,
   openPlaylist,
   setStatusMessage,
-  setQueueSourceSongs,
+  setQueueSourceIds,
   setQueueSourceLabel,
   replaceQueueAndPlay,
   enqueueSongs,
@@ -37,7 +37,7 @@ export function useSearchPaletteActionHandler({
         }
 
         if (targetItem.kind === "song" && targetItem.song) {
-          setQueueSourceSongs([targetItem.song]);
+          setQueueSourceIds([targetItem.song.id]);
           setQueueSourceLabel("Search Palette");
           await replaceQueueAndPlay([targetItem.song], 0);
           return;
@@ -141,7 +141,7 @@ export function useSearchPaletteActionHandler({
       playlists,
       replaceQueueAndPlay,
       setQueueSourceLabel,
-      setQueueSourceSongs,
+      setQueueSourceIds,
       setStatusMessage,
     ],
   );

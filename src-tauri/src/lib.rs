@@ -73,6 +73,10 @@ pub fn run() {
             let startup_started_at = std::time::Instant::now();
             log::info!("startup: initializing app state");
 
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
             let app_handle = app.handle().clone();
             let database =
                 Arc::new(db::Database::new(&app_handle).expect("failed to initialize database"));
@@ -107,9 +111,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app_request_restart,
             commands::library_scan,
             commands::library_get_song_count,
             commands::library_get_songs,
+            commands::library_get_sorted_song_ids,
             commands::library_get_songs_by_ids,
             commands::library_get_albums,
             commands::library_get_album_tracks,

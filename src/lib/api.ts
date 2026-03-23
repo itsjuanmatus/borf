@@ -58,6 +58,12 @@ export interface AudioPlayOptions {
   crossfadeMs?: number;
 }
 
+export const appApi = {
+  requestRestart() {
+    return invokeWithPerf<void>("app_request_restart");
+  },
+};
+
 export const libraryApi = {
   scan(folderPath: string) {
     return invokeWithPerf<void>("library_scan", { folderPath });
@@ -76,6 +82,13 @@ export const libraryApi = {
   },
   getSongsByIds(songIds: string[]) {
     return invokeWithPerf<SongListItem[]>("library_get_songs_by_ids", { songIds });
+  },
+  getSortedSongIds(params: { sort: SongSortField; order: SortOrder; tagIds?: string[] }) {
+    return invokeWithPerf<string[]>("library_get_sorted_song_ids", {
+      sort: params.sort,
+      order: params.order,
+      tagIds: params.tagIds ?? null,
+    });
   },
   getAlbums(params: { limit: number; offset: number; sort: AlbumSortField; order: SortOrder }) {
     return invokeWithPerf<AlbumListItem[]>("library_get_albums", params);

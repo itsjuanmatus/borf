@@ -64,6 +64,20 @@ pub fn library_get_songs(
 }
 
 #[tauri::command]
+pub fn library_get_sorted_song_ids(
+    state: State<'_, AppState>,
+    sort: String,
+    order: String,
+    tag_ids: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    state.db.get_sorted_song_ids(
+        &sort,
+        &order,
+        tag_ids.as_deref().unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
 pub fn library_get_songs_by_ids(
     state: State<'_, AppState>,
     song_ids: Vec<String>,

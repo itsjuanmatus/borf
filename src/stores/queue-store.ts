@@ -3,32 +3,32 @@ import type { SongListItem } from "../types";
 
 interface QueueState {
   upNext: SongListItem[];
-  playingFromSource: SongListItem[];
+  playingFromSourceIds: string[];
   playingFromIndex: number;
   playingFromLabel: string | null;
   isOpen: boolean;
   open: () => void;
   close: () => void;
-  setPlayingFrom: (songs: SongListItem[], label: string | null, startIndex?: number) => void;
+  setPlayingFrom: (ids: string[], label: string | null, startIndex?: number) => void;
   enqueueSongs: (songs: SongListItem[]) => void;
   reorderUpNext: (songIds: string[]) => void;
   removeFromUpNext: (songId: string) => void;
-  shiftNextSong: () => SongListItem | null;
+  shiftNextSongId: () => { song: SongListItem } | { id: string } | null;
   clearUpNext: () => void;
 }
 
 export const useQueueStore = create<QueueState>((set, get) => ({
   upNext: [],
-  playingFromSource: [],
+  playingFromSourceIds: [],
   playingFromIndex: 0,
   playingFromLabel: null,
   isOpen: false,
   open: () => set({ isOpen: true }),
   close: () => set({ isOpen: false }),
-  setPlayingFrom: (playingFromSource, playingFromLabel, startIndex = 0) =>
+  setPlayingFrom: (playingFromSourceIds, playingFromLabel, startIndex = 0) =>
     set({
-      playingFromSource,
-      playingFromIndex: Math.max(0, Math.min(startIndex, playingFromSource.length)),
+      playingFromSourceIds,
+      playingFromIndex: Math.max(0, Math.min(startIndex, playingFromSourceIds.length)),
       playingFromLabel,
     }),
   enqueueSongs: (songs) =>
@@ -62,18 +62,18 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     set((state) => ({
       upNext: state.upNext.filter((song) => song.id !== songId),
     })),
-  shiftNextSong: () => {
+  shiftNextSongId: () => {
     const state = get();
     if (state.upNext.length > 0) {
       const [nextSong, ...rest] = state.upNext;
       set({ upNext: rest });
-      return nextSong;
+      return { song: nextSong };
     }
 
-    if (state.playingFromIndex < state.playingFromSource.length) {
-      const nextSong = state.playingFromSource[state.playingFromIndex];
+    if (state.playingFromIndex < state.playingFromSourceIds.length) {
+      const nextId = state.playingFromSourceIds[state.playingFromIndex];
       set({ playingFromIndex: state.playingFromIndex + 1 });
-      return nextSong;
+      return { id: nextId };
     }
 
     return null;

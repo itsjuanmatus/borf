@@ -115,5 +115,15 @@ export function useStartupBootstrap({
       window.clearTimeout(kickoffHandle);
       cancelDeferredWarmup?.();
     };
-  }, []);
+  }, [
+    activeView,
+    bootstrapAlbums,
+    bootstrapArtists,
+    bootstrapPlaylists,
+    bootstrapQueueRestore,
+    bootstrapSongs,
+    bootstrapTags,
+    queueRestoreMode,
+    setErrorMessage,
+  ]);
 }

@@ -34,6 +34,8 @@ import { usePlayTracking } from "./features/history/usePlayTracking";
 import type { SongContextMenuState } from "./features/metadata/SongContextMenu";
 import { TransportBar } from "./features/player/TransportBar";
 import { UpNextPanel } from "./features/queue/UpNextPanel";
+import { UpdateDialog } from "./features/settings/UpdateDialog";
+import { useAppUpdate } from "./features/settings/useAppUpdate";
 import { audioApi, libraryApi } from "./lib/api";
 import { startupTrace } from "./lib/startup-trace";
 import { usePlayerStore } from "./stores/player-store";
@@ -88,8 +90,6 @@ function App() {
   const activePlaylistId = useSessionStore((state) => state.activePlaylistId);
   const setActivePlaylistId = useSessionStore((state) => state.setActivePlaylistId);
 
-  const queueSongIds = useSessionStore((state) => state.queueSongIds);
-  const queueCurrentIndex = useSessionStore((state) => state.queueCurrentIndex);
   const setQueueSongIds = useSessionStore((state) => state.setQueueSongIds);
   const setQueueCurrentIndex = useSessionStore((state) => state.setQueueCurrentIndex);
   const repeatMode = useSessionStore((state) => state.repeatMode);
@@ -97,18 +97,19 @@ function App() {
   const shuffleEnabled = useSessionStore((state) => state.shuffleEnabled);
   const setShuffleEnabled = useSessionStore((state) => state.setShuffleEnabled);
 
-  const queue = usePlayerStore((state) => state.queue);
+  const queueLength = usePlayerStore((state) => state.queueIds.length);
   const nowPlaying = usePlayerStore((state) => state.nowPlaying);
   const currentIndex = usePlayerStore((state) => state.currentIndex);
 
-  const setQueue = usePlayerStore((state) => state.setQueue);
+  const setQueueIds = usePlayerStore((state) => state.setQueueIds);
+  const cacheSongs = usePlayerStore((state) => state.cacheSongs);
   const setNowPlaying = usePlayerStore((state) => state.setNowPlaying);
   const setCurrentIndex = usePlayerStore((state) => state.setCurrentIndex);
   const setPlaybackState = usePlayerStore((state) => state.setPlaybackState);
   const setPosition = usePlayerStore((state) => state.setPosition);
 
   const upNext = useQueueStore((state) => state.upNext);
-  const playingFromSource = useQueueStore((state) => state.playingFromSource);
+  const playingFromSourceIds = useQueueStore((state) => state.playingFromSourceIds);
   const playingFromIndex = useQueueStore((state) => state.playingFromIndex);
   const playingFromLabel = useQueueStore((state) => state.playingFromLabel);
   const enqueueSongs = useQueueStore((state) => state.enqueueSongs);
@@ -118,10 +119,13 @@ function App() {
   const upNextOpen = useQueueStore((state) => state.isOpen);
   const openUpNext = useQueueStore((state) => state.open);
   const closeUpNext = useQueueStore((state) => state.close);
-  const playingFrom = useMemo(
-    () => playingFromSource.slice(playingFromIndex, playingFromIndex + 50),
-    [playingFromIndex, playingFromSource],
-  );
+  const playingFrom = useMemo(() => {
+    const ids = playingFromSourceIds.slice(playingFromIndex, playingFromIndex + 50);
+    const cache = usePlayerStore.getState().songCache;
+    return ids
+      .map((id) => cache.get(id))
+      .filter((song): song is SongListItem => Boolean(song));
+  }, [playingFromIndex, playingFromSourceIds]);
 
   const songsScrollRef = useRef<HTMLDivElement | null>(null);
   const albumsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -137,6 +141,7 @@ function App() {
   const perfPlayRequestRef = useRef<{ songId: string; startedAt: number } | null>(null);
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
+  const appUpdate = useAppUpdate();
 
   const {
     onSongStarted,
@@ -160,10 +165,8 @@ function App() {
   }, []);
 
   const persistQueue = useCallback(
-    (nextQueue: SongListItem[], nextIndex: number | null, persistSongIds = true) => {
-      if (persistSongIds) {
-        setQueueSongIds(nextQueue.map((song) => song.id));
-      }
+    (ids: string[], nextIndex: number | null) => {
+      setQueueSongIds(ids);
       setQueueCurrentIndex(nextIndex);
     },
     [setQueueCurrentIndex, setQueueSongIds],
@@ -279,9 +282,6 @@ function App() {
     for (const song of Object.values(songsByIndex)) {
       lookup.set(song.id, song);
     }
-    for (const song of queue) {
-      lookup.set(song.id, song);
-    }
     for (const track of activePlaylistLoadedTracks) {
       lookup.set(track.song.id, track.song);
     }
@@ -299,7 +299,6 @@ function App() {
     activePlaylistLoadedTracks,
     albumTracks,
     artistAlbumTracks,
-    queue,
     searchResults,
     songsByIndex,
   ]);
@@ -323,20 +322,18 @@ function App() {
   );
 
   const playbackController = usePlaybackController({
-    queue,
     nowPlaying,
     currentIndex,
     songCount,
     repeatMode,
     shuffleEnabled,
-    queueSongIds,
-    queueCurrentIndex,
     songsByIndex,
     activePlaylist,
     activePlaylistTrackIds,
     activePlaylistTracksByIndex,
     songLookupById,
     loadAllSongsForCurrentSort,
+    loadSortedSongIds: libraryController.loadSortedSongIds,
     loadSongsByIdsInBatches,
     onSongStarted,
     triggerStatsRefresh,
@@ -346,7 +343,8 @@ function App() {
     },
     persistQueue,
     setShuffleEnabled,
-    setQueue,
+    setQueueIds,
+    cacheSongs,
     setCurrentIndex,
     setNowPlaying,
     setPlaybackState,
@@ -359,7 +357,7 @@ function App() {
   });
   const {
     currentSong,
-    setQueueSourceSongs,
+    setQueueSourceIds,
     setQueueSourceLabel,
     isQueueHydrating,
     restoreProgress,
@@ -610,7 +608,7 @@ function App() {
     applyRoute,
     openPlaylist,
     setStatusMessage,
-    setQueueSourceSongs,
+    setQueueSourceIds,
     setQueueSourceLabel,
     replaceQueueAndPlay,
     enqueueSongs,
@@ -723,6 +721,9 @@ function App() {
     handleExportPlayStatsCsv,
     handleExportTagsCsv,
     handleExportHierarchyMd,
+    onCheckForUpdates: appUpdate.checkForUpdatesManually,
+    isCheckingForUpdates: appUpdate.isChecking,
+    updateStatusText: appUpdate.statusText,
     crossfadeEnabled,
     crossfadeSeconds,
     setCrossfadeEnabled,
@@ -776,7 +777,7 @@ function App() {
         <div className="flex h-full min-h-0 flex-col text-text">
           <TransportBar
             currentSong={currentSong}
-            queueLength={queue.length}
+            queueLength={queueLength}
             songCount={songCount}
             upNextCount={upNext.length}
             isQueueHydrating={isQueueHydrating}
@@ -947,6 +948,7 @@ function App() {
           </div>
 
           <AppDialogLayer {...dialogLayerProps} />
+          <UpdateDialog {...appUpdate.dialogProps} />
         </div>
 
         <DragOverlay>

@@ -38,11 +38,7 @@ interface UseLibraryControllerParams {
   songsScrollRef: MutableRefObject<HTMLDivElement | null>;
   albumsScrollRef: MutableRefObject<HTMLDivElement | null>;
   artistsScrollRef: MutableRefObject<HTMLDivElement | null>;
-  persistQueue: (
-    nextQueue: SongListItem[],
-    nextIndex: number | null,
-    persistSongIds?: boolean,
-  ) => void;
+  persistQueue: (ids: string[], nextIndex: number | null) => void;
   setStatusMessage: (message: string) => void;
   setErrorMessage: (message: string | null) => void;
 }
@@ -144,7 +140,7 @@ export function useLibraryController({
   const artistOrder = useSessionStore((state) => state.artistOrder);
 
   const setSongs = usePlayerStore((state) => state.setSongs);
-  const setQueue = usePlayerStore((state) => state.setQueue);
+  const setQueueIds = usePlayerStore((state) => state.setQueueIds);
   const setNowPlaying = usePlayerStore((state) => state.setNowPlaying);
   const setCurrentIndex = usePlayerStore((state) => state.setCurrentIndex);
   const setPlaybackState = usePlayerStore((state) => state.setPlaybackState);
@@ -266,7 +262,7 @@ export function useLibraryController({
       if (count === 0 && totalSongCount === 0) {
         setStatusMessage("No songs found yet. Scan a folder to begin.");
         setSongs([]);
-        setQueue([], null);
+        setQueueIds([], null);
         setNowPlaying(null);
         setCurrentIndex(null);
         setPlaybackState("stopped");
@@ -291,7 +287,7 @@ export function useLibraryController({
       setNowPlaying,
       setPlaybackState,
       setPosition,
-      setQueue,
+      setQueueIds,
       setSongs,
       setStatusMessage,
     ],
@@ -403,6 +399,14 @@ export function useLibraryController({
     }
 
     return result;
+  }, [selectedTagFilterIds, songOrder, songSort]);
+
+  const loadSortedSongIds = useCallback(async () => {
+    return libraryApi.getSortedSongIds({
+      sort: songSort,
+      order: songOrder,
+      tagIds: selectedTagFilterIds,
+    });
   }, [selectedTagFilterIds, songOrder, songSort]);
 
   const loadSongsByIdsInBatches = useCallback(async (songIds: string[]) => {
@@ -917,6 +921,7 @@ export function useLibraryController({
     refreshSongCount,
     ensureSongPage,
     loadAllSongsForCurrentSort,
+    loadSortedSongIds,
     loadSongsByIdsInBatches,
     refreshAlbums,
     refreshArtists,

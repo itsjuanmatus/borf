@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>borf for macOS</title>
+    <meta
+      name="description"
+      content="Download the latest signed Apple Silicon build of borf."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <p class="site-mark">borf</p>
+        <a
+          class="header-link"
+          href="https://github.com/itsjuanmatus/borf"
+          target="_blank"
+          rel="noreferrer"
+        >
+          GitHub
+        </a>
+      </header>
+
+      <main class="hero-grid">
+        <section class="hero-copy">
+          <p class="eyebrow">Direct macOS release</p>
+          <h1>Keep the music library local. Keep the download path simple.</h1>
+          <p class="lede">
+            borf is a local-first desktop music player with playlists, tags,
+            history, stats, and a signed in-app updater. This page always points
+            at the latest Apple Silicon build published on GitHub Releases.
+          </p>
+
+          <div class="cta-row">
+            <a
+              id="download-link"
+              class="download-button is-loading"
+              href="https://github.com/itsjuanmatus/borf/releases/latest"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Loading latest release...
+            </a>
+            <span class="platform-pill">macOS 14+ • Apple Silicon</span>
+          </div>
+
+          <p id="download-status" class="status-line">
+            Fetching release metadata from GitHub...
+          </p>
+
+          <div class="feature-grid">
+            <article class="feature-card">
+              <p class="feature-label">Local-first</p>
+              <p class="feature-body">
+                Your library, queue, tags, and play history stay on your Mac.
+              </p>
+            </article>
+            <article class="feature-card">
+              <p class="feature-label">Signed updates</p>
+              <p class="feature-body">
+                The desktop app checks the same release feed and verifies update
+                signatures before installing.
+              </p>
+            </article>
+            <article class="feature-card">
+              <p class="feature-label">One download page</p>
+              <p class="feature-body">
+                Railway hosts the landing page while GitHub Releases hosts the
+                actual artifacts.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <aside class="release-card">
+          <p class="card-kicker">Latest release</p>
+          <div class="release-version-wrap">
+            <p id="release-version" class="release-version">--</p>
+            <p id="release-date" class="release-date">Checking release date...</p>
+          </div>
+
+          <div class="release-meta">
+            <p class="meta-label">Channel</p>
+            <p class="meta-value">Stable</p>
+          </div>
+          <div class="release-meta">
+            <p class="meta-label">Artifact</p>
+            <p id="release-artifact" class="meta-value">Resolving DMG asset...</p>
+          </div>
+
+          <a
+            id="release-notes-link"
+            class="notes-link"
+            href="https://github.com/itsjuanmatus/borf/releases/latest"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Read release notes
+          </a>
+
+          <div class="notes-preview">
+            <p class="notes-label">Why this page exists</p>
+            <p>
+              No version hardcoding. The button and release details are resolved
+              from the latest GitHub release at runtime.
+            </p>
+          </div>
+        </aside>
+      </main>
+
+      <footer class="site-footer">
+        <p>borf ships outside the Mac App Store for now.</p>
+      </footer>
+    </div>
+
+    <noscript>
+      <div class="noscript-banner">
+        JavaScript is required to resolve the latest DMG asset automatically.
+      </div>
+    </noscript>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -235,6 +235,62 @@ impl Database {
         Ok(songs)
     }
 
+    pub fn get_sorted_song_ids(
+        &self,
+        sort: &str,
+        order: &str,
+        tag_ids: &[String],
+    ) -> Result<Vec<String>, String> {
+        let sort_column = match sort {
+            "title" => "s.title COLLATE NOCASE",
+            "artist" => "s.artist COLLATE NOCASE",
+            "album" => "s.album COLLATE NOCASE",
+            "date_added" => "s.date_added",
+            "play_count" => "s.play_count",
+            "duration_ms" => "s.duration_ms",
+            _ => "s.title COLLATE NOCASE",
+        };
+
+        let sort_order = if order.eq_ignore_ascii_case("desc") {
+            "DESC"
+        } else {
+            "ASC"
+        };
+
+        let normalized_tag_ids = normalize_tag_ids(tag_ids);
+        let (tag_clause, values) = build_song_tag_clause_values(&normalized_tag_ids);
+
+        let query = format!(
+            "
+            SELECT s.id
+            FROM songs s
+            WHERE s.is_missing = 0
+              {tag_clause}
+            ORDER BY {sort_column} {sort_order}
+            "
+        );
+
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("failed to lock database connection"))?;
+
+        let mut statement = connection
+            .prepare(&query)
+            .map_err(|error| format!("failed to prepare sorted song ids query: {error}"))?;
+
+        let rows = statement
+            .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
+            .map_err(|error| format!("failed to query sorted song ids: {error}"))?;
+
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.map_err(|error| format!("failed to read song id row: {error}"))?);
+        }
+
+        Ok(ids)
+    }
+
     pub fn get_songs_by_ids(&self, song_ids: &[String]) -> Result<Vec<SongListItem>, String> {
         if song_ids.is_empty() {
             return Ok(Vec::new());

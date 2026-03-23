@@ -3,37 +3,47 @@ import type { PlaybackState, SongListItem } from "../types";
 
 interface PlayerState {
   songs: SongListItem[];
-  queue: SongListItem[];
+  queueIds: string[];
+  songCache: Map<string, SongListItem>;
   nowPlaying: SongListItem | null;
   currentIndex: number | null;
   playbackState: PlaybackState;
   positionMs: number;
   durationMs: number;
   setSongs: (songs: SongListItem[]) => void;
-  setQueue: (queue: SongListItem[], currentIndex: number | null) => void;
+  setQueueIds: (ids: string[], currentIndex: number | null) => void;
+  cacheSongs: (songs: SongListItem[]) => void;
   setNowPlaying: (song: SongListItem | null) => void;
   setCurrentIndex: (index: number | null) => void;
   setPlaybackState: (state: PlaybackState) => void;
   setPosition: (positionMs: number, durationMs: number) => void;
 }
 
-export const usePlayerStore = create<PlayerState>((set) => ({
+export const usePlayerStore = create<PlayerState>((set, get) => ({
   songs: [],
-  queue: [],
+  queueIds: [],
+  songCache: new Map(),
   nowPlaying: null,
   currentIndex: null,
   playbackState: "stopped",
   positionMs: 0,
   durationMs: 0,
   setSongs: (songs) => set({ songs }),
-  setQueue: (queue, currentIndex) =>
-    set({
-      queue,
-      currentIndex,
-      nowPlaying:
-        currentIndex !== null && currentIndex >= 0 && currentIndex < queue.length
-          ? queue[currentIndex]
-          : null,
+  setQueueIds: (queueIds, currentIndex) => {
+    const { songCache } = get();
+    const nowPlaying =
+      currentIndex !== null && currentIndex >= 0 && currentIndex < queueIds.length
+        ? songCache.get(queueIds[currentIndex]) ?? null
+        : null;
+    set({ queueIds, currentIndex, nowPlaying });
+  },
+  cacheSongs: (songs) =>
+    set((state) => {
+      const nextCache = new Map(state.songCache);
+      for (const song of songs) {
+        nextCache.set(song.id, song);
+      }
+      return { songCache: nextCache };
     }),
   setNowPlaying: (nowPlaying) => set({ nowPlaying }),
   setCurrentIndex: (currentIndex) => set({ currentIndex }),

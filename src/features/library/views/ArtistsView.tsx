@@ -273,7 +273,9 @@ export function ArtistsView({
                     }}
                   >
                     <span className="flex items-center justify-center">
-                      <span className="text-muted-on-dark group-hover/song:hidden">{index + 1}</span>
+                      <span className="text-muted-on-dark group-hover/song:hidden">
+                        {index + 1}
+                      </span>
                       <SongPlayButton
                         onPlay={() => onPlayArtistAlbumTrack(index)}
                         label={`Play ${song.title}`}

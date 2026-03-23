@@ -135,7 +135,11 @@ function TrackRow({
           ) : (
             <>
               <span className="text-muted-on-dark group-hover/song:hidden">{index + 1}</span>
-              <SongPlayButton onPlay={() => onPlayTrack(index)} label={`Play ${track.song.title}`} className="hidden group-hover/song:flex" />
+              <SongPlayButton
+                onPlay={() => onPlayTrack(index)}
+                label={`Play ${track.song.title}`}
+                className="hidden group-hover/song:flex"
+              />
             </>
           )}
         </span>

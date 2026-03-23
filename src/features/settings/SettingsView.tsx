@@ -1,5 +1,6 @@
-import { Download } from "lucide-react";
+import { Download, RefreshCw } from "lucide-react";
 import type { RefObject } from "react";
+import { Button } from "../../components/ui/button";
 import { Slider } from "../../components/ui/slider";
 import type { SongOptionalColumnKey, Tag } from "../../types";
 import { TagsSettingsPanel } from "../tags/TagsSettingsPanel";
@@ -21,6 +22,9 @@ interface SettingsViewProps {
   onExportPlayStatsCsv: () => void;
   onExportTagsCsv: () => void;
   onExportHierarchyMd: () => void;
+  onCheckForUpdates: () => void;
+  isCheckingForUpdates: boolean;
+  updateStatusText: string;
   crossfadeEnabled: boolean;
   crossfadeSeconds: number;
   onCrossfadeEnabledChange: (enabled: boolean) => void;
@@ -43,6 +47,9 @@ export function SettingsView({
   onExportPlayStatsCsv,
   onExportTagsCsv,
   onExportHierarchyMd,
+  onCheckForUpdates,
+  isCheckingForUpdates,
+  updateStatusText,
   crossfadeEnabled,
   crossfadeSeconds,
   onCrossfadeEnabledChange,
@@ -102,6 +109,23 @@ export function SettingsView({
                 }}
               />
               <p className="mt-2 text-[11px] text-muted-on-dark">1 to 12 seconds</p>
+            </div>
+          </section>
+        </div>
+
+        <div className="mt-8">
+          <section className="rounded-2xl bg-cloud/8 p-4">
+            <h3 className="text-base font-semibold text-cloud">Updates</h3>
+            <p className="mt-1 text-sm text-muted-on-dark">
+              Signed releases are served from GitHub Releases and checked automatically after
+              startup.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button type="button" onClick={onCheckForUpdates} disabled={isCheckingForUpdates}>
+                <RefreshCw className={`h-4 w-4 ${isCheckingForUpdates ? "animate-spin" : ""}`} />
+                {isCheckingForUpdates ? "Checking..." : "Check for Updates"}
+              </Button>
+              <p className="text-sm text-muted-on-dark">{updateStatusText}</p>
             </div>
           </section>
         </div>

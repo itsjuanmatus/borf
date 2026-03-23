@@ -1,3 +1,4 @@
+mod app;
 mod audio;
 mod exports;
 mod history;
@@ -8,6 +9,7 @@ mod playlists;
 mod stats;
 mod tags;
 
+pub use app::*;
 pub use audio::*;
 pub use exports::*;
 pub use history::*;
