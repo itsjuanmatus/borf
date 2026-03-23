@@ -2,19 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0"
-    />
-    <title>borf for macOS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>borf — your cozy music library</title>
     <meta
       name="description"
-      content="Download the latest signed Apple Silicon build of borf."
+      content="A local-first desktop music player for macOS with playlists, tags, history, stats, and signed auto-updates."
     />
+    <link rel="icon" type="image/png" href="./app-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
@@ -22,25 +20,36 @@
   <body>
     <div class="page-shell">
       <header class="site-header">
-        <p class="site-mark">borf</p>
-        <a
-          class="header-link"
-          href="https://github.com/itsjuanmatus/borf"
-          target="_blank"
-          rel="noreferrer"
-        >
-          GitHub
-        </a>
+        <div class="header-left">
+          <img src="./app-icon.png" alt="borf icon" class="header-icon" />
+          <p class="site-mark">borf</p>
+        </div>
+        <nav class="header-nav">
+          <a
+            href="https://github.com/itsjuanmatus/borf"
+            target="_blank"
+            rel="noreferrer"
+            class="header-link"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            GitHub
+          </a>
+        </nav>
       </header>
 
-      <main class="hero-grid">
-        <section class="hero-copy">
-          <p class="eyebrow">Direct macOS release</p>
-          <h1>Keep the music library local. Keep the download path simple.</h1>
-          <p class="lede">
-            borf is a local-first desktop music player with playlists, tags,
-            history, stats, and a signed in-app updater. This page always points
-            at the latest Apple Silicon build published on GitHub Releases.
+      <main class="hero">
+        <div class="hero-content">
+          <div class="hero-badge">
+            <span class="badge-dot"></span>
+            macOS &bull; Apple Silicon
+          </div>
+          <h1>your cozy<br />music library</h1>
+          <p class="hero-desc">
+            borf is a local-first desktop music player. Your library, playlists,
+            tags, play history, and stats stay on your Mac. Signed builds with
+            automatic updates.
           </p>
 
           <div class="cta-row">
@@ -51,83 +60,110 @@
               target="_blank"
               rel="noreferrer"
             >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
               Loading latest release...
             </a>
-            <span class="platform-pill">macOS 14+ • Apple Silicon</span>
+            <p id="download-status" class="status-line">
+              Fetching release info...
+            </p>
           </div>
+        </div>
 
-          <p id="download-status" class="status-line">
-            Fetching release metadata from GitHub...
-          </p>
+        <div class="hero-visual">
+          <img src="./app-icon.png" alt="borf mascot" class="hero-mascot" />
+        </div>
+      </main>
 
-          <div class="feature-grid">
-            <article class="feature-card">
-              <p class="feature-label">Local-first</p>
-              <p class="feature-body">
-                Your library, queue, tags, and play history stay on your Mac.
-              </p>
-            </article>
-            <article class="feature-card">
-              <p class="feature-label">Signed updates</p>
-              <p class="feature-body">
-                The desktop app checks the same release feed and verifies update
-                signatures before installing.
-              </p>
-            </article>
-            <article class="feature-card">
-              <p class="feature-label">One download page</p>
-              <p class="feature-body">
-                Railway hosts the landing page while GitHub Releases hosts the
-                actual artifacts.
-              </p>
-            </article>
+      <section class="features">
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+              <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+            </svg>
           </div>
-        </section>
-
-        <aside class="release-card">
-          <p class="card-kicker">Latest release</p>
-          <div class="release-version-wrap">
-            <p id="release-version" class="release-version">--</p>
-            <p id="release-date" class="release-date">Checking release date...</p>
+          <h3>Local-first</h3>
+          <p>Your music library, queue, tags, and play history never leave your Mac. No accounts, no cloud.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
           </div>
-
-          <div class="release-meta">
-            <p class="meta-label">Channel</p>
-            <p class="meta-value">Stable</p>
+          <h3>Signed &amp; notarized</h3>
+          <p>Every build is code-signed with a Developer ID certificate and notarized by Apple. No Gatekeeper warnings.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+              <polyline points="17 6 23 6 23 12" />
+            </svg>
           </div>
-          <div class="release-meta">
-            <p class="meta-label">Artifact</p>
-            <p id="release-artifact" class="meta-value">Resolving DMG asset...</p>
+          <h3>Stats &amp; history</h3>
+          <p>Track what you listen to. See your top artists, albums, and listening trends over time.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
           </div>
+          <h3>Auto-updates</h3>
+          <p>The app checks for new versions and installs them with cryptographically signed verification.</p>
+        </article>
+      </section>
 
+      <aside class="release-card">
+        <div class="release-header">
+          <span class="release-badge">Latest release</span>
           <a
             id="release-notes-link"
-            class="notes-link"
+            class="release-notes-link"
             href="https://github.com/itsjuanmatus/borf/releases/latest"
             target="_blank"
             rel="noreferrer"
           >
-            Read release notes
+            Release notes &rarr;
           </a>
-
-          <div class="notes-preview">
-            <p class="notes-label">Why this page exists</p>
-            <p>
-              No version hardcoding. The button and release details are resolved
-              from the latest GitHub release at runtime.
-            </p>
+        </div>
+        <div class="release-details">
+          <div class="release-detail">
+            <span class="detail-label">Version</span>
+            <span id="release-version" class="detail-value">--</span>
           </div>
-        </aside>
-      </main>
+          <div class="release-detail">
+            <span class="detail-label">Published</span>
+            <span id="release-date" class="detail-value">Loading...</span>
+          </div>
+          <div class="release-detail">
+            <span class="detail-label">Artifact</span>
+            <span id="release-artifact" class="detail-value">Resolving...</span>
+          </div>
+          <div class="release-detail">
+            <span class="detail-label">Platform</span>
+            <span class="detail-value">macOS 14+ &bull; Apple Silicon</span>
+          </div>
+        </div>
+      </aside>
 
       <footer class="site-footer">
-        <p>borf ships outside the Mac App Store for now.</p>
+        <p>borf ships outside the Mac App Store. Built with Tauri, React, and Rust.</p>
+        <p class="footer-muted">Made by Juan Matus</p>
       </footer>
     </div>
 
     <noscript>
       <div class="noscript-banner">
-        JavaScript is required to resolve the latest DMG asset automatically.
+        JavaScript is required to resolve the latest release automatically.
       </div>
     </noscript>
 
