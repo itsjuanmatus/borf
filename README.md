@@ -9,32 +9,54 @@ pnpm install
 pnpm tauri dev
 ```
 
-## Signed updater and macOS releases
+## Releasing a new version
 
-- The desktop app is configured to read signed updater metadata from `https://github.com/itsjuanmatus/borf/releases/latest/download/latest.json`.
-- Pushing a semantic version tag such as `v0.2.0` triggers `.github/workflows/release-macos.yml`.
-- The release workflow builds the Apple Silicon macOS bundle, creates updater artifacts, signs them, notarizes the app, and publishes the GitHub Release.
-- `src-tauri/tauri.conf.json` keeps a checked-in placeholder updater public key. CI replaces it at build time with `TAURI_UPDATER_PUBLIC_KEY`.
+1. Bump the version in all three files:
+   - `src-tauri/tauri.conf.json`
+   - `src-tauri/Cargo.toml`
+   - `package.json`
+2. Commit the version bump:
+   ```sh
+   git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
+   git commit -m "Bump version to X.Y.Z"
+   ```
+3. Create and push an annotated tag:
+   ```sh
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin main --follow-tags
+   ```
 
-Required GitHub secrets:
+The tag push triggers `.github/workflows/release-macos.yml`, which builds the Apple Silicon macOS bundle, code-signs it, submits it to Apple for notarization, signs the updater artifacts, and publishes a GitHub Release with the DMG and auto-updater files.
 
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-- `TAURI_UPDATER_PUBLIC_KEY`
-- `APPLE_CERTIFICATE`
-- `APPLE_CERTIFICATE_PASSWORD`
-- `APPLE_SIGNING_IDENTITY`
-- `APPLE_API_ISSUER`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_P8`
+Existing installations will detect the new version via the in-app updater and prompt the user to install it.
 
-One-time updater key generation:
+## CI/CD details
+
+- The release workflow builds for `aarch64-apple-darwin` (Apple Silicon).
+- `src-tauri/tauri.conf.json` keeps a placeholder updater public key. CI injects the real key at build time from `TAURI_UPDATER_PUBLIC_KEY`.
+- The updater manifest is published at `https://github.com/itsjuanmatus/borf/releases/latest/download/latest.json`.
+
+### Required GitHub secrets
+
+| Secret | Description |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Ed25519 private key for signing updater artifacts |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the Tauri signing key |
+| `TAURI_UPDATER_PUBLIC_KEY` | Matching public key (injected into config at build time) |
+| `APPLE_CERTIFICATE` | Base64-encoded Developer ID Application .p12 |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the .p12 export |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_API_ISSUER` | App Store Connect API issuer ID |
+| `APPLE_API_KEY` | App Store Connect API key ID |
+| `APPLE_API_KEY_P8` | Raw contents of the .p8 API key file |
+
+### One-time updater key generation
 
 ```sh
-pnpm tauri signer generate -w ~/.tauri/borf-updater.key
+pnpm tauri signer generate -w ~/.tauri/borf.key
 ```
 
-Store the generated private key in `TAURI_SIGNING_PRIVATE_KEY`, and store the matching public key in `TAURI_UPDATER_PUBLIC_KEY`.
+Back up `~/.tauri/borf.key` securely — if lost, existing installations cannot verify future updates.
 
 ## Website and Railway deploy
 
