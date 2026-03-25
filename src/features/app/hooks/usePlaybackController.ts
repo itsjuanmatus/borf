@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { AudioPlayOptions } from "../../../lib/api";
 import { audioApi } from "../../../lib/api";
 import { usePlayerStore } from "../../../stores/player-store";
+import { useQueueStore } from "../../../stores/queue-store";
 import { useSessionStore } from "../../../stores/session-store";
 import type {
   PlaybackState,
@@ -38,7 +39,6 @@ interface UsePlaybackControllerParams {
   setNowPlaying: (song: SongListItem | null) => void;
   setPlaybackState: (state: PlaybackState) => void;
   setPosition: (positionMs: number, durationMs: number) => void;
-  upNext: SongListItem[];
   removeFromUpNext: (songId: string) => void;
   setPlayingFrom: (ids: string[], label: string | null, startIndex?: number) => void;
   crossfadeEnabled: boolean;
@@ -113,7 +113,6 @@ export function usePlaybackController({
   setNowPlaying,
   setPlaybackState,
   setPosition,
-  upNext,
   removeFromUpNext,
   setPlayingFrom,
   crossfadeEnabled,
@@ -152,6 +151,7 @@ export function usePlaybackController({
     pendingQueueHydrationRef.current = null;
     queueRestoreTokenRef.current += 1;
     lastAutoCrossfadeSongIdRef.current = null;
+    usePlayerStore.getState().setDeferredCrossfade(null);
     setIsQueueHydrating(false);
     setRestoreProgress(null);
     return nextToken;
@@ -338,7 +338,7 @@ export function usePlaybackController({
   );
 
   const previewQueueAdvanceTarget = useCallback((): QueueAdvanceTarget | null => {
-    const upNextSong = upNext[0];
+    const upNextSong = useQueueStore.getState().upNext[0];
     if (upNextSong) {
       return {
         song: upNextSong,
@@ -391,31 +391,44 @@ export function usePlaybackController({
       queueIndex: currentIndex + 1,
       fromUpNext: false,
     };
-  }, [currentIndex, getQueueIds, repeatMode, upNext]);
+  }, [currentIndex, getQueueIds, repeatMode]);
 
-  const resolveQueueAdvancePlayOptions = useCallback(
-    (nextSong: SongListItem, overrideFadeMs?: number): AudioPlayOptions => {
-      if (!crossfadeEnabled || !currentSong) {
-        return { transition: "immediate" };
+  const completeDeferredCrossfade = useCallback(
+    (deferred: NonNullable<ReturnType<typeof usePlayerStore.getState>["deferredCrossfade"]>) => {
+      usePlayerStore.getState().setDeferredCrossfade(null);
+
+      cacheSongs([deferred.song]);
+      setNowPlaying(deferred.song);
+
+      if (deferred.fromUpNext) {
+        removeFromUpNext(deferred.song.id);
       }
 
-      const requestedFadeMs = overrideFadeMs ?? normalizeCrossfadeSeconds(crossfadeSeconds) * 1_000;
-      const effectiveFadeMs = computeEffectiveCrossfadeMs(
-        requestedFadeMs,
-        currentSong.duration_ms,
-        nextSong.duration_ms,
-      );
-
-      if (effectiveFadeMs <= 0) {
-        return { transition: "immediate" };
+      if (deferred.queueIndex !== null) {
+        const ids = getQueueIds();
+        setCurrentIndex(deferred.queueIndex);
+        persistQueue(ids, deferred.queueIndex);
+        setPlayingFrom(ids, queueSourceLabel, deferred.queueIndex + 1);
       }
 
-      return {
-        transition: "crossfade",
-        crossfadeMs: effectiveFadeMs,
-      };
+      setErrorMessage(null);
+      onSongStarted(deferred.song);
+      triggerStatsRefresh();
+      lastAutoCrossfadeSongIdRef.current = null;
     },
-    [crossfadeEnabled, crossfadeSeconds, currentSong],
+    [
+      cacheSongs,
+      getQueueIds,
+      onSongStarted,
+      persistQueue,
+      queueSourceLabel,
+      removeFromUpNext,
+      setCurrentIndex,
+      setErrorMessage,
+      setNowPlaying,
+      setPlayingFrom,
+      triggerStatsRefresh,
+    ],
   );
 
   const advanceQueueTarget = useCallback(
@@ -438,6 +451,11 @@ export function usePlaybackController({
     void (async () => {
       await waitForActiveQueueHydration();
 
+      const deferred = usePlayerStore.getState().deferredCrossfade;
+      if (deferred) {
+        completeDeferredCrossfade(deferred);
+      }
+
       if (repeatMode === "one" && nowPlaying) {
         void playSong(nowPlaying, undefined, undefined, { transition: "immediate" }).catch(
           (error: unknown) => setErrorMessage(String(error)),
@@ -447,7 +465,7 @@ export function usePlaybackController({
 
       const nextTarget = previewQueueAdvanceTarget();
       if (nextTarget) {
-        const playOptions = resolveQueueAdvancePlayOptions(nextTarget.song);
+        const playOptions: AudioPlayOptions = { transition: "immediate" };
         void advanceQueueTarget(nextTarget, playOptions).catch((error: unknown) =>
           setErrorMessage(String(error)),
         );
@@ -490,6 +508,7 @@ export function usePlaybackController({
     })();
   }, [
     advanceQueueTarget,
+    completeDeferredCrossfade,
     currentIndex,
     getQueueIds,
     nowPlaying,
@@ -498,7 +517,6 @@ export function usePlaybackController({
     previewQueueAdvanceTarget,
     repeatMode,
     resolveSongById,
-    resolveQueueAdvancePlayOptions,
     setErrorMessage,
     setPlaybackState,
     waitForActiveQueueHydration,
@@ -506,6 +524,15 @@ export function usePlaybackController({
 
   const handlePositionTick = useCallback(
     (positionMs: number, durationMs: number) => {
+      // If a deferred crossfade is active, check whether the outgoing song has finished.
+      const deferred = usePlayerStore.getState().deferredCrossfade;
+      if (deferred) {
+        if (positionMs >= deferred.durationMs) {
+          completeDeferredCrossfade(deferred);
+        }
+        return;
+      }
+
       if (!crossfadeEnabled || repeatMode === "one" || !currentSong) {
         return;
       }
@@ -538,19 +565,37 @@ export function usePlaybackController({
       }
 
       lastAutoCrossfadeSongIdRef.current = currentSong.id;
-      const playOptions = resolveQueueAdvancePlayOptions(nextTarget.song, effectiveFadeMs);
-      void advanceQueueTarget(nextTarget, playOptions).catch((error: unknown) =>
-        setErrorMessage(String(error)),
-      );
+
+      // Start the audio crossfade in the backend without changing the UI.
+      // The UI stays on the current song until it finishes; the next song
+      // fades in underneath so the listener can still interact with the
+      // outgoing track (e.g. skip back).
+      cacheSongs([nextTarget.song]);
+      void audioApi
+        .play(nextTarget.song.id, undefined, {
+          transition: "crossfade",
+          crossfadeMs: effectiveFadeMs,
+        })
+        .catch((error: unknown) => setErrorMessage(String(error)));
+
+      usePlayerStore.getState().setDeferredCrossfade({
+        song: nextTarget.song,
+        queueIndex: nextTarget.queueIndex,
+        fromUpNext: nextTarget.fromUpNext,
+        startedAt: Date.now(),
+        positionAtStart: positionMs,
+        durationMs: trackDurationMs,
+        pausedAt: null,
+      });
     },
     [
-      advanceQueueTarget,
+      cacheSongs,
+      completeDeferredCrossfade,
       crossfadeEnabled,
       crossfadeSeconds,
       currentSong,
       previewQueueAdvanceTarget,
       repeatMode,
-      resolveQueueAdvancePlayOptions,
       setErrorMessage,
     ],
   );
@@ -558,6 +603,11 @@ export function usePlaybackController({
   const playPrevious = useCallback(() => {
     void (async () => {
       await waitForActiveQueueHydration();
+
+      const deferred = usePlayerStore.getState().deferredCrossfade;
+      if (deferred) {
+        completeDeferredCrossfade(deferred);
+      }
 
       const ids = getQueueIds();
       if (ids.length === 0) {
@@ -592,6 +642,7 @@ export function usePlaybackController({
       );
     })();
   }, [
+    completeDeferredCrossfade,
     currentIndex,
     getQueueIds,
     playQueueIndex,
@@ -638,6 +689,28 @@ export function usePlaybackController({
     setPlaybackState,
     songCount,
   ]);
+
+  const handleSeek = useCallback(
+    (positionMs: number, durationMs: number) => {
+      const deferred = usePlayerStore.getState().deferredCrossfade;
+      if (deferred && currentSong) {
+        // Cancel the crossfade: re-play the current song at the seek position.
+        // audioApi.play with immediate transition stops the active crossfade in
+        // the backend and starts the current song fresh from the new position.
+        usePlayerStore.getState().setDeferredCrossfade(null);
+        lastAutoCrossfadeSongIdRef.current = null;
+        setPosition(positionMs, durationMs);
+        void audioApi
+          .play(currentSong.id, positionMs, { transition: "immediate" })
+          .catch((error: unknown) => setErrorMessage(String(error)));
+        return;
+      }
+
+      setPosition(positionMs, durationMs);
+      void audioApi.seek(positionMs).catch((error: unknown) => setErrorMessage(String(error)));
+    },
+    [currentSong, setErrorMessage, setPosition],
+  );
 
   const handleMediaKeyPlay = useCallback(async () => {
     const playbackState = usePlayerStore.getState().playbackState;
@@ -889,7 +962,9 @@ export function usePlaybackController({
       if (total === 0) {
         setQueueIds([], null);
         setCurrentIndex(null);
-        setNowPlaying(null);
+        if (usePlayerStore.getState().nowPlaying === null) {
+          setNowPlaying(null);
+        }
         setQueueSourceIds([]);
         setPlayingFrom([], queueSourceLabel, 0);
         setIsQueueHydrating(false);
@@ -928,12 +1003,16 @@ export function usePlaybackController({
           return;
         }
 
-        // Resolve now playing from cache
-        const nowPlayingSong =
-          safePersistedIndex !== null
-            ? (usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null)
-            : null;
-        setNowPlaying(nowPlayingSong);
+        // Only set now-playing from the persisted queue on initial load — if a
+        // song is already loaded (e.g. the user played something from history),
+        // don't overwrite it.
+        if (usePlayerStore.getState().nowPlaying === null) {
+          const nowPlayingSong =
+            safePersistedIndex !== null
+              ? (usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null)
+              : null;
+          setNowPlaying(nowPlayingSong);
+        }
         setPlayingFrom(
           queueSongIds,
           queueSourceLabel,
@@ -958,11 +1037,13 @@ export function usePlaybackController({
         return;
       }
 
-      const nowPlayingSong =
-        safePersistedIndex !== null
-          ? (usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null)
-          : null;
-      setNowPlaying(nowPlayingSong);
+      if (usePlayerStore.getState().nowPlaying === null) {
+        const nowPlayingSong =
+          safePersistedIndex !== null
+            ? (usePlayerStore.getState().songCache.get(queueSongIds[safePersistedIndex]) ?? null)
+            : null;
+        setNowPlaying(nowPlayingSong);
+      }
       setPlayingFrom(
         queueSongIds,
         queueSourceLabel,
@@ -1075,6 +1156,7 @@ export function usePlaybackController({
     playNext,
     playPrevious,
     handlePositionTick,
+    handleSeek,
     handleTogglePlayback,
     handleMediaKeyPlay,
     handleMediaKeyPause,

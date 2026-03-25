@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { type MutableRefObject, useEffect, useRef } from "react";
 import { audioApi } from "../../../lib/api";
+import { usePlayerStore } from "../../../stores/player-store";
 import type {
   AudioErrorEvent,
   AudioPositionEvent,
@@ -96,18 +97,49 @@ export function useAppEventListeners({
           perfPlayRequestRef.current = null;
         }
         if (event.payload.state === "paused") {
+          const deferred = usePlayerStore.getState().deferredCrossfade;
+          if (deferred && deferred.pausedAt === null) {
+            usePlayerStore.getState().setDeferredCrossfade({
+              ...deferred,
+              pausedAt: Date.now(),
+            });
+          }
           onPaused();
         } else if (event.payload.state === "playing") {
+          const deferred = usePlayerStore.getState().deferredCrossfade;
+          if (deferred && deferred.pausedAt !== null) {
+            const pauseDuration = Date.now() - deferred.pausedAt;
+            usePlayerStore.getState().setDeferredCrossfade({
+              ...deferred,
+              startedAt: deferred.startedAt + pauseDuration,
+              pausedAt: null,
+            });
+          }
           onResumed();
         }
       }),
       listen<AudioPositionEvent>("audio:position-update", (event) => {
+        const deferred = usePlayerStore.getState().deferredCrossfade;
+        if (deferred) {
+          const now = deferred.pausedAt ?? Date.now();
+          const elapsed = now - deferred.startedAt;
+          const pos = Math.min(deferred.positionAtStart + elapsed, deferred.durationMs);
+          setPosition(pos, deferred.durationMs);
+          onPositionUpdate(pos, deferred.durationMs);
+          return;
+        }
         setPosition(event.payload.current_ms, event.payload.duration_ms);
         onPositionUpdate(event.payload.current_ms, event.payload.duration_ms);
       }),
       listen<AudioTrackEndedEvent>("audio:track-ended", () => {
         onTrackEnded();
         triggerStatsRefresh();
+        // If a deferred crossfade is active, the next song is already playing
+        // in the backend — it will finish transitioning via handlePositionTick.
+        // Calling playNext() here would double-advance the queue.
+        if (usePlayerStore.getState().deferredCrossfade) {
+          return;
+        }
         playNext();
       }),
       listen("mediakey:toggle", () => {

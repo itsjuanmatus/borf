@@ -10,6 +10,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import { SongArtwork } from "./components/song-artwork";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { useAppDialogLayerProps } from "./features/app/hooks/useAppDialogLayerProps";
 import { useAppEventListeners } from "./features/app/hooks/useAppEventListeners";
@@ -261,6 +262,7 @@ function App() {
     setPlaylistReorderMode,
     dragOverlayLabel,
     dragOverlayCount,
+    dragOverlaySong,
     bootstrapPlaylists,
     refreshPlaylists,
     refreshPlaylistTracks,
@@ -341,7 +343,6 @@ function App() {
     setNowPlaying,
     setPlaybackState,
     setPosition,
-    upNext,
     removeFromUpNext,
     setPlayingFrom,
     crossfadeEnabled,
@@ -358,6 +359,7 @@ function App() {
     playNext,
     playPrevious,
     handlePositionTick,
+    handleSeek,
     handleTogglePlayback,
     handleMediaKeyPlay,
     handleMediaKeyPause,
@@ -733,6 +735,9 @@ function App() {
     setClipboardHint,
     setSongContextMenu,
     setErrorMessage,
+    refreshPlaylistTracks,
+    activePlaylistId,
+    clearSelection,
     isSearchPaletteOpen,
     selectedTagFilterIds,
     paletteLocalSongs,
@@ -784,12 +789,7 @@ function App() {
             onNext={playNext}
             onToggleShuffle={handleToggleShuffle}
             onCycleRepeat={() => setRepeatMode(cycleRepeatMode(repeatMode))}
-            onSeek={(nextPosition, nextDurationMs) => {
-              setPosition(nextPosition, nextDurationMs);
-              void audioApi
-                .seek(nextPosition)
-                .catch((error: unknown) => setErrorMessage(String(error)));
-            }}
+            onSeek={handleSeek}
             onToggleUpNext={() => {
               if (upNextOpen) closeUpNext();
               else openUpNext();
@@ -943,10 +943,20 @@ function App() {
           <UpdateDialog {...appUpdate.dialogProps} />
         </div>
 
-        <DragOverlay>
+        <DragOverlay dropAnimation={null}>
           {dragOverlayCount > 0 ? (
-            <div className="rounded-2xl bg-cloud px-3 py-2 shadow-xl">
-              <p className="text-sm font-medium">{dragOverlayLabel ?? "Dragging"}</p>
+            <div className="flex items-center gap-2 rounded-2xl bg-cloud px-3 py-2 shadow-xl">
+              {dragOverlaySong ? (
+                <>
+                  <SongArtwork
+                    artworkPath={dragOverlaySong.artworkPath}
+                    sizeClassName="h-8 w-8"
+                  />
+                  <p className="text-sm font-medium">{dragOverlaySong.title}</p>
+                </>
+              ) : (
+                <p className="text-sm font-medium">{dragOverlayLabel ?? "Dragging"}</p>
+              )}
             </div>
           ) : null}
         </DragOverlay>

@@ -1,6 +1,16 @@
 import { create } from "zustand";
 import type { PlaybackState, SongListItem } from "../types";
 
+export interface DeferredCrossfade {
+  song: SongListItem;
+  queueIndex: number | null;
+  fromUpNext: boolean;
+  startedAt: number;
+  positionAtStart: number;
+  durationMs: number;
+  pausedAt: number | null;
+}
+
 interface PlayerState {
   songs: SongListItem[];
   queueIds: string[];
@@ -10,6 +20,7 @@ interface PlayerState {
   playbackState: PlaybackState;
   positionMs: number;
   durationMs: number;
+  deferredCrossfade: DeferredCrossfade | null;
   setSongs: (songs: SongListItem[]) => void;
   setQueueIds: (ids: string[], currentIndex: number | null) => void;
   cacheSongs: (songs: SongListItem[]) => void;
@@ -17,9 +28,10 @@ interface PlayerState {
   setCurrentIndex: (index: number | null) => void;
   setPlaybackState: (state: PlaybackState) => void;
   setPosition: (positionMs: number, durationMs: number) => void;
+  setDeferredCrossfade: (deferred: DeferredCrossfade | null) => void;
 }
 
-export const usePlayerStore = create<PlayerState>((set, get) => ({
+export const usePlayerStore = create<PlayerState>((set) => ({
   songs: [],
   queueIds: [],
   songCache: new Map(),
@@ -28,14 +40,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   playbackState: "stopped",
   positionMs: 0,
   durationMs: 0,
+  deferredCrossfade: null,
   setSongs: (songs) => set({ songs }),
   setQueueIds: (queueIds, currentIndex) => {
-    const { songCache } = get();
-    const nowPlaying =
-      currentIndex !== null && currentIndex >= 0 && currentIndex < queueIds.length
-        ? (songCache.get(queueIds[currentIndex]) ?? null)
-        : null;
-    set({ queueIds, currentIndex, nowPlaying });
+    set({ queueIds, currentIndex });
   },
   cacheSongs: (songs) =>
     set((state) => {
@@ -49,4 +57,5 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   setCurrentIndex: (currentIndex) => set({ currentIndex }),
   setPlaybackState: (playbackState) => set({ playbackState }),
   setPosition: (positionMs, durationMs) => set({ positionMs, durationMs }),
+  setDeferredCrossfade: (deferredCrossfade) => set({ deferredCrossfade }),
 }));
