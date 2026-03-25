@@ -18,6 +18,7 @@ interface UseAppMainContentPropsParams {
   activeView: LibraryView;
   activePlaylistId: string | null;
   statsRefreshSignal: number;
+  historyRefreshSignal: number;
   songLookupById: Map<string, SongListItem>;
   setSongContextMenu: (menu: SongContextMenuState | null) => void;
   setErrorMessage: (message: string | null) => void;
@@ -50,6 +51,7 @@ export function useAppMainContentProps({
   activeView,
   activePlaylistId,
   statsRefreshSignal,
+  historyRefreshSignal,
   songLookupById,
   setSongContextMenu,
   setErrorMessage,
@@ -134,7 +136,6 @@ export function useAppMainContentProps({
     togglePlaylistReorderMode,
     requestPlaylistTrackRange,
     addSongsToQueue,
-    removeSelectedFromActivePlaylist,
   } = playlistController;
 
   const {
@@ -273,9 +274,6 @@ export function useAppMainContentProps({
         void playFromPlaylistIndex(index).catch((error: unknown) => setErrorMessage(String(error)));
       },
       onAddToQueue: (songId) => addSongsToQueue([songId]),
-      onRemoveSelected: () => {
-        void removeSelectedFromActivePlaylist();
-      },
       onTrackContextMenu: (event, songId, index) => {
         event.preventDefault();
         if (!selectedSongIdSet.has(songId)) {
@@ -445,8 +443,8 @@ export function useAppMainContentProps({
       onAddSongToQueue: (songId) => addSongsToQueue([songId]),
     },
     historyViewProps: {
-      initialScrollTop: scrollPositionsRef.current[navigationRouteKey({ kind: "history" })] ?? 0,
       restoreScrollTop: historyRestoreScrollTop,
+      refreshSignal: historyRefreshSignal,
       onScrollTopChange: (scrollTop) => {
         recordScrollPositionForRoute({ kind: "history" }, scrollTop);
       },

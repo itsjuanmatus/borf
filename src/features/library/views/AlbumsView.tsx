@@ -5,6 +5,7 @@ import { SongPlayButton } from "../../../components/song-play-button";
 import type { SongOptionalColumnConfigItem } from "../../../lib/song-columns";
 import { cn } from "../../../lib/utils";
 import type { AlbumListItem, SongListItem, SongOptionalColumnKey } from "../../../types";
+import { DraggableSongButton } from "../../playlists/DraggableSongButton";
 import { SongOptionalCells } from "../SongOptionalCells";
 import { formatDuration } from "../song-format";
 
@@ -103,9 +104,16 @@ export function AlbumsView({
               <p className="p-4 text-sm text-muted-on-dark">No tracks found for this album.</p>
             ) : (
               albumTracks.map((song, index) => (
-                <button
+                <DraggableSongButton
                   key={song.id}
-                  type="button"
+                  draggableId={`album-song:${song.id}`}
+                  payload={{
+                    type: "song",
+                    songIds: [song.id],
+                    source: "library",
+                    songTitle: song.title,
+                    songArtworkPath: song.artwork_path,
+                  }}
                   className={cn(
                     "group/song grid w-full select-none items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
                     "hover:bg-cloud/8",
@@ -167,7 +175,7 @@ export function AlbumsView({
                       <ListPlus className="h-4 w-4" />
                     </button>
                   </span>
-                </button>
+                </DraggableSongButton>
               ))
             )}
           </div>

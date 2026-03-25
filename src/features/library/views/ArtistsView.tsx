@@ -10,6 +10,7 @@ import type {
   SongListItem,
   SongOptionalColumnKey,
 } from "../../../types";
+import { DraggableSongButton } from "../../playlists/DraggableSongButton";
 import { SongOptionalCells } from "../SongOptionalCells";
 import { formatDuration } from "../song-format";
 
@@ -257,9 +258,16 @@ export function ArtistsView({
                 <p className="p-4 text-sm text-muted-on-dark">Loading tracks...</p>
               ) : (
                 artistAlbumTracks.map((song, index) => (
-                  <button
+                  <DraggableSongButton
                     key={song.id}
-                    type="button"
+                    draggableId={`artist-album-song:${song.id}`}
+                    payload={{
+                      type: "song",
+                      songIds: [song.id],
+                      source: "library",
+                      songTitle: song.title,
+                      songArtworkPath: song.artwork_path,
+                    }}
                     className={cn(
                       "group/song grid w-full select-none items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
                       "hover:bg-cloud/8",
@@ -323,7 +331,7 @@ export function ArtistsView({
                         <ListPlus className="h-4 w-4" />
                       </button>
                     </span>
-                  </button>
+                  </DraggableSongButton>
                 ))
               )}
             </div>

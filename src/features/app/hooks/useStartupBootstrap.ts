@@ -21,20 +21,24 @@ interface UseStartupBootstrapParams {
   setErrorMessage: (message: string | null) => void;
 }
 
-export function useStartupBootstrap({
-  activeView,
-  queueRestoreMode = "lazy",
-  bootstrapSongs,
-  bootstrapAlbums,
-  bootstrapArtists,
-  bootstrapPlaylists,
-  bootstrapTags,
-  bootstrapQueueRestore,
-  setErrorMessage,
-}: UseStartupBootstrapParams) {
+export function useStartupBootstrap(params: UseStartupBootstrapParams) {
+  const paramsRef = useRef(params);
+  paramsRef.current = params;
   const bootTokenRef = useRef(0);
 
   useEffect(() => {
+    const {
+      activeView,
+      queueRestoreMode = "lazy",
+      bootstrapSongs,
+      bootstrapAlbums,
+      bootstrapArtists,
+      bootstrapPlaylists,
+      bootstrapTags,
+      bootstrapQueueRestore,
+      setErrorMessage,
+    } = paramsRef.current;
+
     const token = bootTokenRef.current + 1;
     bootTokenRef.current = token;
     let cancelDeferredWarmup: (() => void) | null = null;
@@ -115,15 +119,6 @@ export function useStartupBootstrap({
       window.clearTimeout(kickoffHandle);
       cancelDeferredWarmup?.();
     };
-  }, [
-    activeView,
-    bootstrapAlbums,
-    bootstrapArtists,
-    bootstrapPlaylists,
-    bootstrapQueueRestore,
-    bootstrapSongs,
-    bootstrapTags,
-    queueRestoreMode,
-    setErrorMessage,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 }

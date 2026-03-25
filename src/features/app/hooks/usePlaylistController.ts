@@ -16,6 +16,7 @@ import type {
 } from "../../../types";
 import {
   parsePlaylistDropId,
+  parsePlaylistGapId,
   parsePlaylistNodeId,
   parsePlaylistTrackId,
   parseQueueSongId,
@@ -94,6 +95,10 @@ export function usePlaylistController({
   >({});
   const [dragOverlayLabel, setDragOverlayLabel] = useState<string | null>(null);
   const [dragOverlayCount, setDragOverlayCount] = useState(0);
+  const [dragOverlaySong, setDragOverlaySong] = useState<{
+    title: string;
+    artworkPath: string | null;
+  } | null>(null);
 
   const activePlaylistRequestIdRef = useRef(0);
   const perfPlaylistOpenRef = useRef<{ playlistId: string; startedAt: number } | null>(null);
@@ -477,21 +482,44 @@ export function usePlaylistController({
         const count = payload.songIds.length;
         setDragOverlayCount(count);
         setDragOverlayLabel(count === 1 ? "1 song" : `${count} songs`);
+        if (count === 1) {
+          const resolved = resolveSongsByIds(payload.songIds);
+          if (resolved.length > 0) {
+            setDragOverlaySong({
+              title: resolved[0]!.title,
+              artworkPath: resolved[0]!.artwork_path,
+            });
+          } else {
+            const meta = data as { songTitle?: string; songArtworkPath?: string | null };
+            if (meta.songTitle) {
+              setDragOverlaySong({
+                title: meta.songTitle,
+                artworkPath: meta.songArtworkPath ?? null,
+              });
+            } else {
+              setDragOverlaySong(null);
+            }
+          }
+        } else {
+          setDragOverlaySong(null);
+        }
         return;
       }
 
+      setDragOverlaySong(null);
       const playlistPayload = payload as DragPlaylistPayload;
       const node = playlists.find((playlist) => playlist.id === playlistPayload.playlistId);
       setDragOverlayCount(1);
       setDragOverlayLabel(node?.name ?? "Playlist");
     },
-    [playlists],
+    [playlists, resolveSongsByIds],
   );
 
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
       setDragOverlayCount(0);
       setDragOverlayLabel(null);
+      setDragOverlaySong(null);
 
       if (!event.over) {
         return;
@@ -515,12 +543,11 @@ export function usePlaylistController({
 
         let newParentId: string | null = null;
         let newIndex = 0;
-        if (overId === "playlist-root") {
-          const siblings = playlists
-            .filter((playlist) => playlist.parent_id === null && playlist.id !== movedId)
-            .sort((a, b) => a.sort_order - b.sort_order);
-          newParentId = null;
-          newIndex = siblings.length;
+
+        const gapTarget = parsePlaylistGapId(overId);
+        if (gapTarget) {
+          newParentId = gapTarget.parentId;
+          newIndex = gapTarget.index;
         } else {
           const overNodeId = parsePlaylistNodeId(overId);
           if (!overNodeId) {
@@ -753,6 +780,7 @@ export function usePlaylistController({
     setPlaylistReorderMode,
     dragOverlayLabel,
     dragOverlayCount,
+    dragOverlaySong,
     bootstrapPlaylists,
     refreshPlaylists,
     requestPlaylistTrackRange,

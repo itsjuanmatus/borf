@@ -8,6 +8,7 @@ interface UseAppUiEffectsParams {
   persistedVolume: number;
   activeView: LibraryView;
   triggerStatsRefresh: () => void;
+  triggerHistoryRefresh: () => void;
   tracePerf: (label: string, startedAt: number, extra?: string) => void;
   perfViewSwitchRef: MutableRefObject<{ view: string; startedAt: number } | null>;
   nowPlaying: SongListItem | null;
@@ -24,6 +25,7 @@ export function useAppUiEffects({
   persistedVolume,
   activeView,
   triggerStatsRefresh,
+  triggerHistoryRefresh,
   tracePerf,
   perfViewSwitchRef,
   nowPlaying,
@@ -64,6 +66,12 @@ export function useAppUiEffects({
       triggerStatsRefresh();
     }
   }, [activeView, triggerStatsRefresh]);
+
+  useEffect(() => {
+    if (activeView === "history") {
+      triggerHistoryRefresh();
+    }
+  }, [activeView, triggerHistoryRefresh]);
 
   useEffect(() => {
     mediaControlsApi

@@ -25,3 +25,20 @@ export function parseQueueSongId(id: string): string | null {
   }
   return id.replace("queue-song:", "");
 }
+
+export function parsePlaylistGapId(id: string): { parentId: string | null; index: number } | null {
+  if (!id.startsWith("playlist-gap:")) {
+    return null;
+  }
+  const rest = id.replace("playlist-gap:", "");
+  const sepIndex = rest.lastIndexOf(":");
+  if (sepIndex < 0) {
+    return null;
+  }
+  const parentPart = rest.slice(0, sepIndex);
+  const indexPart = rest.slice(sepIndex + 1);
+  return {
+    parentId: parentPart === "root" ? null : parentPart,
+    index: Number(indexPart),
+  };
+}

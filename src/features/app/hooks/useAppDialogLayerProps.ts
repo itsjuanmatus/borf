@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { playlistApi } from "../../../lib/api";
 import type { PlaylistNode, SearchPaletteItem, SongListItem, Tag } from "../../../types";
 import type { SongContextMenuState } from "../../metadata/SongContextMenu";
 import type { AppDialogLayerProps } from "../layout/AppDialogLayer";
@@ -17,6 +18,9 @@ interface UseAppDialogLayerPropsParams {
   setClipboardHint: (hint: string | null) => void;
   setSongContextMenu: (menu: SongContextMenuState | null) => void;
   setErrorMessage: (message: string | null) => void;
+  refreshPlaylistTracks: (playlistId: string) => Promise<void>;
+  activePlaylistId: string | null;
+  clearSelection: () => void;
   isSearchPaletteOpen: boolean;
   selectedTagFilterIds: string[];
   paletteLocalSongs: SongListItem[];
@@ -43,6 +47,9 @@ export function useAppDialogLayerProps({
   setClipboardHint,
   setSongContextMenu,
   setErrorMessage,
+  refreshPlaylistTracks,
+  activePlaylistId,
+  clearSelection,
   isSearchPaletteOpen,
   selectedTagFilterIds,
   paletteLocalSongs,
@@ -89,12 +96,39 @@ export function useAppDialogLayerProps({
     menu: songContextMenu,
     menuRef: contextMenuRef,
     position: contextMenuPos,
+    playlists,
+    onAddToPlaylist: (playlistId, songIds) => {
+      void (async () => {
+        try {
+          await playlistApi.addSongs({ playlistId, songIds });
+          await refreshPlaylistTracks(playlistId);
+          const playlist = playlists.find((p) => p.id === playlistId);
+          setClipboardHint(
+            `Added ${songIds.length} song${songIds.length > 1 ? "s" : ""} to ${playlist?.name ?? "playlist"}`,
+          );
+        } catch (error: unknown) {
+          setErrorMessage(String(error));
+        }
+      })();
+    },
     onPlayFromHere: (source, index) => {
       if (source === "playlist") {
         void playFromPlaylistIndex(index).catch((error: unknown) => setErrorMessage(String(error)));
       } else {
         void playFromSongsIndex(index).catch((error: unknown) => setErrorMessage(String(error)));
       }
+    },
+    onRemoveFromPlaylist: (songIds) => {
+      if (!activePlaylistId) return;
+      void (async () => {
+        try {
+          await playlistApi.removeSongs(activePlaylistId, songIds);
+          await refreshPlaylistTracks(activePlaylistId);
+          clearSelection();
+        } catch (error: unknown) {
+          setErrorMessage(String(error));
+        }
+      })();
     },
     onAddToQueue: addSongsToQueue,
     onCopy: (songIds) => {

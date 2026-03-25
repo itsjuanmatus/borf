@@ -1,6 +1,4 @@
-import { useDroppable } from "@dnd-kit/core";
-import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { useDndContext, useDraggable, useDroppable } from "@dnd-kit/core";
 import { ChevronDown, ChevronRight, Folder, FolderOpen, ListMusic } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../lib/utils";
@@ -19,9 +17,28 @@ interface TreeNodeProps {
   activePlaylistId: string | null;
   childrenByParent: Map<string | null, PlaylistNode[]>;
   expandedFolderIds: Set<string>;
+  isDraggingNode: boolean;
   toggleFolder: (folderId: string) => void;
   onSelectPlaylist: (playlistId: string) => void;
   onContextMenu: (event: React.MouseEvent<HTMLButtonElement>, node: PlaylistNode) => void;
+}
+
+function InsertionGap({ id }: { id: string }) {
+  const droppable = useDroppable({ id });
+
+  return (
+    <div
+      ref={droppable.setNodeRef}
+      className="flex h-3 items-center px-2"
+    >
+      <div
+        className={cn(
+          "h-0.5 w-full rounded-full transition-colors",
+          droppable.isOver ? "bg-leaf" : "bg-cloud/10",
+        )}
+      />
+    </div>
+  );
 }
 
 function TreeNode({
@@ -30,36 +47,46 @@ function TreeNode({
   activePlaylistId,
   childrenByParent,
   expandedFolderIds,
+  isDraggingNode,
   toggleFolder,
   onSelectPlaylist,
   onContextMenu,
 }: TreeNodeProps) {
-  const sortable = useSortable({
-    id: `playlist-node:${node.id}`,
-    data: {
-      type: "playlist-node",
-      playlistId: node.id,
-      isFolder: node.is_folder,
-    } satisfies DragPlaylistPayload,
-  });
-  const style = {
-    transform: CSS.Transform.toString(sortable.transform),
-    transition: sortable.transition,
+  const dragPayload: DragPlaylistPayload = {
+    type: "playlist-node",
+    playlistId: node.id,
+    isFolder: node.is_folder,
   };
+  const draggable = useDraggable({
+    id: `playlist-node:${node.id}`,
+    data: dragPayload,
+  });
+  const droppable = useDroppable({
+    id: `playlist-node:${node.id}`,
+  });
+
+  const { active } = useDndContext();
+  const activeDragType = (active?.data.current as { type?: string } | undefined)?.type;
+  const showDropHighlight =
+    droppable.isOver && !(node.is_folder && activeDragType === "song");
 
   const childNodes = childrenByParent.get(node.id) ?? [];
   const isExpanded = node.is_folder ? expandedFolderIds.has(node.id) : false;
 
   return (
-    <div ref={sortable.setNodeRef} style={style}>
+    <div>
       <button
+        ref={(el) => {
+          draggable.setNodeRef(el);
+          droppable.setNodeRef(el);
+        }}
         type="button"
-        {...sortable.attributes}
-        {...sortable.listeners}
+        {...draggable.attributes}
+        {...draggable.listeners}
         className={cn(
           "mb-1 flex h-8 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted-on-dark",
           "hover:bg-cloud/8",
-          sortable.isOver && "bg-leaf/15 ring-1 ring-leaf/50",
+          showDropHighlight && "bg-leaf/15 ring-1 ring-leaf/50",
           activePlaylistId === node.id && "bg-leaf/20 text-cloud font-medium",
         )}
         data-playlist-id={node.id}
@@ -98,26 +125,29 @@ function TreeNode({
       </button>
 
       {node.is_folder && isExpanded && childNodes.length > 0 ? (
-        <SortableContext
-          items={childNodes.map((child) => `playlist-node:${child.id}`)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div>
-            {childNodes.map((childNode) => (
+        <div>
+          {childNodes.map((childNode, i) => (
+            <div key={childNode.id}>
+              {isDraggingNode && i === 0 ? (
+                <InsertionGap id={`playlist-gap:${node.id}:0`} />
+              ) : null}
               <TreeNode
-                key={childNode.id}
                 node={childNode}
                 depth={depth + 1}
                 activePlaylistId={activePlaylistId}
                 childrenByParent={childrenByParent}
                 expandedFolderIds={expandedFolderIds}
+                isDraggingNode={isDraggingNode}
                 toggleFolder={toggleFolder}
                 onSelectPlaylist={onSelectPlaylist}
                 onContextMenu={onContextMenu}
               />
-            ))}
-          </div>
-        </SortableContext>
+              {isDraggingNode ? (
+                <InsertionGap id={`playlist-gap:${node.id}:${i + 1}`} />
+              ) : null}
+            </div>
+          ))}
+        </div>
       ) : null}
     </div>
   );
@@ -178,7 +208,6 @@ export function PlaylistTree({
   }, [playlists]);
 
   const rootNodes = childrenByParent.get(null) ?? [];
-  const rootDroppable = useDroppable({ id: "playlist-root" });
 
   const toggleFolder = (folderId: string) => {
     setExpandedFolderIds((previous) => {
@@ -250,39 +279,37 @@ export function PlaylistTree({
     activeNode.scrollIntoView({ block: "nearest" });
   }, [activePlaylistId, playlistById]);
 
+  const { active } = useDndContext();
+  const activeDragType = (active?.data.current as { type?: string } | undefined)?.type;
+  const isDraggingNode = activeDragType === "playlist-node";
+
   return (
-    <div
-      ref={(node) => {
-        rootDroppable.setNodeRef(node);
-        treeRootRef.current = node;
-      }}
-      className={cn(
-        "min-h-16 rounded-lg p-1",
-        rootDroppable.isOver && "bg-leaf/15 ring-1 ring-leaf/50",
-      )}
-    >
-      <SortableContext
-        items={rootNodes.map((node) => `playlist-node:${node.id}`)}
-        strategy={verticalListSortingStrategy}
-      >
-        {rootNodes.length === 0 ? (
-          <p className="p-2 text-xs text-muted-on-dark">No playlists yet.</p>
-        ) : (
-          rootNodes.map((node) => (
+    <div ref={treeRootRef} className="min-h-16 rounded-lg p-1">
+      {rootNodes.length === 0 ? (
+        <p className="p-2 text-xs text-muted-on-dark">No playlists yet.</p>
+      ) : (
+        rootNodes.map((node, i) => (
+          <div key={node.id}>
+            {isDraggingNode && i === 0 ? (
+              <InsertionGap id="playlist-gap:root:0" />
+            ) : null}
             <TreeNode
-              key={node.id}
               node={node}
               depth={0}
               activePlaylistId={activePlaylistId}
               childrenByParent={childrenByParent}
               expandedFolderIds={expandedFolderIds}
+              isDraggingNode={isDraggingNode}
               toggleFolder={toggleFolder}
               onSelectPlaylist={onSelectPlaylist}
               onContextMenu={onContextMenu}
             />
-          ))
-        )}
-      </SortableContext>
+            {isDraggingNode ? (
+              <InsertionGap id={`playlist-gap:root:${i + 1}`} />
+            ) : null}
+          </div>
+        ))
+      )}
     </div>
   );
 }

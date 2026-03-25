@@ -1,5 +1,6 @@
 import {
-  closestCenter,
+  type Modifier,
+  pointerWithin,
   DndContext,
   DragOverlay,
   KeyboardSensor,
@@ -50,7 +51,7 @@ import type {
   SongListItem,
 } from "./types";
 
-const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
+const SCROLL_RESTORE_MAX_ATTEMPTS = 3;
 const WATCHER_FULL_REFRESH_COOLDOWN_MS = 10_000;
 const STARTUP_QUEUE_RESTORE_MODE: QueueRestoreMode = "lazy";
 const PERF_TRACE_ENABLED = (() => {
@@ -140,6 +141,7 @@ function App() {
   const perfPlayRequestRef = useRef<{ songId: string; startedAt: number } | null>(null);
   const perfViewSwitchRef = useRef<{ view: string; startedAt: number } | null>(null);
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
+  const [historyRefreshSignal, setHistoryRefreshSignal] = useState(0);
   const appUpdate = useAppUpdate();
 
   const {
@@ -151,6 +153,9 @@ function App() {
   } = usePlayTracking();
   const triggerStatsRefresh = useCallback(() => {
     setStatsRefreshSignal((current) => current + 1);
+  }, []);
+  const triggerHistoryRefresh = useCallback(() => {
+    setHistoryRefreshSignal((current) => current + 1);
   }, []);
 
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -306,10 +311,23 @@ function App() {
     return Array.from(songLookupById.values());
   }, [paletteCatalogSongs, songLookupById]);
 
+  const snapToCursor: Modifier = ({ activatorEvent, activeNodeRect, transform }) => {
+    if (activatorEvent instanceof PointerEvent && activeNodeRect) {
+      const offsetX = activatorEvent.clientX - activeNodeRect.left;
+      const offsetY = activatorEvent.clientY - activeNodeRect.top;
+      return {
+        ...transform,
+        x: transform.x + offsetX - 16,
+        y: transform.y + offsetY - 16,
+      };
+    }
+    return transform;
+  };
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 8,
+        distance: 5,
       },
     }),
     useSensor(KeyboardSensor),
@@ -658,6 +676,7 @@ function App() {
     persistedVolume,
     activeView,
     triggerStatsRefresh,
+    triggerHistoryRefresh,
     tracePerf,
     perfViewSwitchRef,
     nowPlaying,
@@ -696,6 +715,7 @@ function App() {
     activeView,
     activePlaylistId,
     statsRefreshSignal,
+    historyRefreshSignal,
     songLookupById,
     setSongContextMenu,
     setErrorMessage,
@@ -765,7 +785,7 @@ function App() {
     <TooltipProvider>
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
+        collisionDetection={pointerWithin}
         onDragStart={handleDragStart}
         onDragEnd={(event) => {
           void handleDragEnd(event);
@@ -943,16 +963,16 @@ function App() {
           <UpdateDialog {...appUpdate.dialogProps} />
         </div>
 
-        <DragOverlay dropAnimation={null}>
+        <DragOverlay dropAnimation={null} style={{ zIndex: 100 }} modifiers={[snapToCursor]}>
           {dragOverlayCount > 0 ? (
-            <div className="flex items-center gap-2 rounded-2xl bg-cloud px-3 py-2 shadow-xl">
+            <div className="pointer-events-none flex max-w-56 items-center gap-2 rounded-2xl bg-cloud px-3 py-2 shadow-xl">
               {dragOverlaySong ? (
                 <>
                   <SongArtwork
                     artworkPath={dragOverlaySong.artworkPath}
-                    sizeClassName="h-8 w-8"
+                    sizeClassName="h-8 w-8 shrink-0"
                   />
-                  <p className="text-sm font-medium">{dragOverlaySong.title}</p>
+                  <p className="truncate text-sm font-medium">{dragOverlaySong.title}</p>
                 </>
               ) : (
                 <p className="text-sm font-medium">{dragOverlayLabel ?? "Dragging"}</p>

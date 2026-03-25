@@ -1,10 +1,9 @@
 import { useDraggable } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
 import type { DragSongPayload } from "../../types";
 
 interface DraggableSongButtonProps {
   draggableId: string;
-  payload: DragSongPayload;
+  payload: DragSongPayload & Record<string, unknown>;
   className: string;
   style?: React.CSSProperties;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
@@ -32,8 +31,7 @@ export function DraggableSongButton({
       className={className}
       style={{
         ...style,
-        transform: CSS.Translate.toString(draggable.transform),
-        opacity: draggable.isDragging ? 0.65 : 1,
+        opacity: draggable.isDragging ? 0.4 : 1,
       }}
       {...draggable.attributes}
       {...draggable.listeners}

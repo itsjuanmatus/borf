@@ -1,12 +1,13 @@
+import { useDraggable } from "@dnd-kit/core";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Clock3 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SongArtwork } from "../../components/song-artwork";
 import { historyApi } from "../../lib/api";
-import type { PlayHistoryEntry } from "../../types";
+import type { DragSongPayload, PlayHistoryEntry } from "../../types";
 
 const PAGE_SIZE = 100;
-const SCROLL_RESTORE_MAX_ATTEMPTS = 12;
+const SCROLL_RESTORE_MAX_ATTEMPTS = 3;
 
 interface DayGroup {
   label: string;
@@ -72,17 +73,68 @@ function flattenGroups(groups: DayGroup[]): FlatRow[] {
   return rows;
 }
 
+function HistoryEntryRow({
+  entry,
+  virtualRow,
+  onPlaySong,
+}: {
+  entry: PlayHistoryEntry;
+  virtualRow: { size: number; start: number };
+  onPlaySong: (songId: string) => void;
+}) {
+  const draggable = useDraggable({
+    id: `history-song:${entry.id}`,
+    data: {
+      type: "song",
+      songIds: [entry.song_id],
+      source: "library",
+      songTitle: entry.title,
+      songArtworkPath: entry.artwork_path,
+    } satisfies DragSongPayload & { songTitle: string; songArtworkPath: string | null },
+  });
+
+  return (
+    <button
+      ref={draggable.setNodeRef}
+      type="button"
+      {...draggable.attributes}
+      {...draggable.listeners}
+      className="group/song flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-cloud/8"
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: `${virtualRow.size}px`,
+        transform: `translateY(${virtualRow.start}px)`,
+        opacity: draggable.isDragging ? 0.4 : 1,
+      }}
+      onClick={() => onPlaySong(entry.song_id)}
+    >
+      <SongArtwork artworkPath={entry.artwork_path} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-cloud">{entry.title}</p>
+        <p className="truncate text-xs text-muted-on-dark">{entry.artist}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-3 text-xs text-muted-on-dark">
+        <span>{formatTimePlayed(entry.duration_played_ms)}</span>
+        <span>{formatTime(entry.started_at)}</span>
+      </div>
+    </button>
+  );
+}
+
 interface HistoryViewProps {
   onPlaySong: (songId: string) => void;
-  initialScrollTop?: number;
   restoreScrollTop?: number | null;
+  refreshSignal?: number;
   onScrollTopChange?: (scrollTop: number) => void;
 }
 
 export function HistoryView({
   onPlaySong,
-  initialScrollTop,
   restoreScrollTop,
+  refreshSignal,
   onScrollTopChange,
 }: HistoryViewProps) {
   const [entries, setEntries] = useState<PlayHistoryEntry[]>([]);
@@ -90,6 +142,7 @@ export function HistoryView({
   const [loading, setLoading] = useState(false);
   const loadedRef = useRef(false);
   const parentRef = useRef<HTMLDivElement>(null);
+  const lastRefreshSignalRef = useRef(refreshSignal ?? 0);
 
   const loadMore = useCallback(async () => {
     if (loading) return;
@@ -111,6 +164,14 @@ export function HistoryView({
     void loadMore();
   }, [loadMore]);
 
+  useEffect(() => {
+    if (refreshSignal === undefined || refreshSignal === lastRefreshSignalRef.current) return;
+    lastRefreshSignalRef.current = refreshSignal;
+    setEntries([]);
+    setTotal(0);
+    loadedRef.current = false;
+  }, [refreshSignal]);
+
   const groups = groupByDay(entries);
   const flatRows = flattenGroups(groups);
 
@@ -129,17 +190,6 @@ export function HistoryView({
       void loadMore();
     }
   }, [entries.length, flatRows.length, loadMore, loading, total, virtualItems]);
-
-  useEffect(() => {
-    if (typeof initialScrollTop !== "number") {
-      return;
-    }
-    const element = parentRef.current;
-    if (!element) {
-      return;
-    }
-    element.scrollTop = Math.max(0, initialScrollTop);
-  }, [initialScrollTop]);
 
   useEffect(() => {
     if (restoreScrollTop === null || restoreScrollTop === undefined) {
@@ -226,30 +276,12 @@ export function HistoryView({
 
           const { entry } = row;
           return (
-            <button
-              type="button"
+            <HistoryEntryRow
               key={entry.id}
-              className="group/song flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-cloud/8"
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                height: `${virtualRow.size}px`,
-                transform: `translateY(${virtualRow.start}px)`,
-              }}
-              onClick={() => onPlaySong(entry.song_id)}
-            >
-              <SongArtwork artworkPath={entry.artwork_path} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-cloud">{entry.title}</p>
-                <p className="truncate text-xs text-muted-on-dark">{entry.artist}</p>
-              </div>
-              <div className="flex shrink-0 items-center gap-3 text-xs text-muted-on-dark">
-                <span>{formatTimePlayed(entry.duration_played_ms)}</span>
-                <span>{formatTime(entry.started_at)}</span>
-              </div>
-            </button>
+              entry={entry}
+              virtualRow={virtualRow}
+              onPlaySong={onPlaySong}
+            />
           );
         })}
       </div>

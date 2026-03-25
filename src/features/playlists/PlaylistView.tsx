@@ -1,8 +1,8 @@
-import { useDroppable } from "@dnd-kit/core";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Clock3, GripVertical, ListMusic, ListPlus, Trash2 } from "lucide-react";
+import { Clock3, GripVertical, ListMusic, ListPlus } from "lucide-react";
 import { type MouseEvent, useEffect, useMemo, useRef } from "react";
 import { SongArtwork } from "../../components/song-artwork";
 import { SongPlayButton } from "../../components/song-play-button";
@@ -42,7 +42,6 @@ interface PlaylistViewProps {
   ) => void;
   onPlayTrack: (index: number) => void;
   onAddToQueue: (songId: string) => void;
-  onRemoveSelected: () => void;
   onTrackContextMenu: (event: MouseEvent<HTMLButtonElement>, songId: string, index: number) => void;
   initialScrollTop?: number;
   restoreScrollTop?: number | null;
@@ -101,18 +100,32 @@ function TrackRow({
     disabled: !reorderEnabled,
   });
 
+  const draggable = useDraggable({
+    id: `playlist-drag:${track.song.id}`,
+    data: payload,
+    disabled: reorderEnabled,
+  });
+
+  const dragAttrs = reorderEnabled ? sortable.attributes : draggable.attributes;
+  const dragListeners = reorderEnabled ? sortable.listeners : draggable.listeners;
+
   return (
     <div
-      ref={sortable.setNodeRef}
-      style={{
-        transform: CSS.Transform.toString(sortable.transform),
-        transition: sortable.transition,
-      }}
+      ref={reorderEnabled ? sortable.setNodeRef : undefined}
+      style={
+        reorderEnabled
+          ? {
+              transform: CSS.Transform.toString(sortable.transform),
+              transition: sortable.transition,
+            }
+          : undefined
+      }
     >
       <button
+        ref={reorderEnabled ? undefined : draggable.setNodeRef}
         type="button"
-        {...(reorderEnabled ? sortable.attributes : {})}
-        {...(reorderEnabled ? sortable.listeners : {})}
+        {...dragAttrs}
+        {...dragListeners}
         className={cn(
           "group/song grid w-full select-none items-center gap-3 px-3 py-2 text-left text-sm text-cloud",
           "hover:bg-cloud/8",
@@ -201,7 +214,6 @@ export function PlaylistView({
   onSelectTrack,
   onPlayTrack,
   onAddToQueue,
-  onRemoveSelected,
   onTrackContextMenu,
   initialScrollTop,
   restoreScrollTop,
@@ -396,16 +408,6 @@ export function PlaylistView({
         <div className="flex items-center gap-2">
           <Button type="button" variant="secondary" size="sm" onClick={onToggleReorderMode}>
             {isReorderMode ? "Done" : "Edit Order"}
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={onRemoveSelected}
-            disabled={selectedSongIds.length === 0}
-          >
-            <Trash2 className="mr-1 h-3.5 w-3.5" />
-            Remove Selected
           </Button>
         </div>
       </header>

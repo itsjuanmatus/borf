@@ -1,3 +1,4 @@
+import { useDraggable } from "@dnd-kit/core";
 import {
   ListMusic,
   Pause,
@@ -17,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/too
 import { cn } from "../../lib/utils";
 import { usePlayerStore } from "../../stores/player-store";
 import { useQueueStore } from "../../stores/queue-store";
-import type { RepeatMode, SongListItem } from "../../types";
+import type { DragSongPayload, RepeatMode, SongListItem } from "../../types";
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) {
@@ -89,6 +90,15 @@ export function TransportBar({
   const [localVolume, setLocalVolume] = useState<number | null>(null);
   const [artworkExpanded, setArtworkExpanded] = useState(false);
   const artworkBtnRef = useRef<HTMLButtonElement>(null);
+
+  const dragPayload: DragSongPayload | undefined = currentSong
+    ? { type: "song", songIds: [currentSong.id], source: "library" }
+    : undefined;
+  const draggable = useDraggable({
+    id: currentSong ? `transport-song:${currentSong.id}` : "transport-song:none",
+    data: dragPayload,
+    disabled: !currentSong,
+  });
 
   useEffect(() => {
     if (!artworkExpanded) return;
@@ -210,7 +220,12 @@ export function TransportBar({
         <div className="flex-1" />
 
         {/* Artwork + info + progress — center */}
-        <div className="flex min-w-0 items-center gap-3">
+        <div
+          ref={draggable.setNodeRef}
+          {...draggable.attributes}
+          {...draggable.listeners}
+          className="flex min-w-0 items-center gap-3"
+        >
           <button
             ref={artworkBtnRef}
             type="button"

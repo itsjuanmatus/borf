@@ -28,8 +28,8 @@ export interface AppMainContentProps {
   albumsViewProps: AlbumsViewProps;
   artistsViewProps: ArtistsViewProps;
   historyViewProps: {
-    initialScrollTop: number;
     restoreScrollTop: number | null;
+    refreshSignal: number;
     onScrollTopChange: (scrollTop: number) => void;
     onPlaySong: (songId: string) => void;
   };
@@ -59,10 +59,12 @@ export function AppMainContent({
 }: AppMainContentProps) {
   return (
     <section className="min-h-0 flex-1 px-4 pb-4 pt-2">
-      {activeView === "songs" ? <SongsView {...songsViewProps} /> : null}
+      <div style={{ display: activeView === "songs" ? undefined : "none" }} className="h-full">
+        <SongsView {...songsViewProps} />
+      </div>
 
-      {activeView === "playlist" ? (
-        activePlaylist?.is_folder ? (
+      <div style={{ display: activeView === "playlist" ? undefined : "none" }} className="h-full">
+        {activePlaylist?.is_folder ? (
           <div className="flex h-full min-h-0 flex-col rounded-2xl bg-cloud/5">
             <div className="px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-on-dark">
@@ -109,25 +111,29 @@ export function AppMainContent({
           </div>
         ) : (
           <PlaylistView {...playlistViewProps} />
-        )
-      ) : null}
+        )}
+      </div>
 
-      {activeView === "albums" ? <AlbumsView {...albumsViewProps} /> : null}
+      <div style={{ display: activeView === "albums" ? undefined : "none" }} className="h-full">
+        <AlbumsView {...albumsViewProps} />
+      </div>
 
-      {activeView === "artists" ? <ArtistsView {...artistsViewProps} /> : null}
+      <div style={{ display: activeView === "artists" ? undefined : "none" }} className="h-full">
+        <ArtistsView {...artistsViewProps} />
+      </div>
 
-      {activeView === "history" ? (
+      <div style={{ display: activeView === "history" ? undefined : "none" }} className="h-full">
         <div className="h-full rounded-2xl bg-cloud/5">
           <HistoryView
-            initialScrollTop={historyViewProps.initialScrollTop}
             restoreScrollTop={historyViewProps.restoreScrollTop}
+            refreshSignal={historyViewProps.refreshSignal}
             onScrollTopChange={historyViewProps.onScrollTopChange}
             onPlaySong={historyViewProps.onPlaySong}
           />
         </div>
-      ) : null}
+      </div>
 
-      {activeView === "stats" ? (
+      <div style={{ display: activeView === "stats" ? undefined : "none" }} className="h-full">
         <div className="h-full rounded-2xl bg-cloud/5 p-4">
           <div
             ref={statsScrollRef}
@@ -137,9 +143,11 @@ export function AppMainContent({
             <StatsView refreshSignal={statsRefreshSignal} />
           </div>
         </div>
-      ) : null}
+      </div>
 
-      {activeView === "settings" ? <SettingsView {...settingsViewProps} /> : null}
+      <div style={{ display: activeView === "settings" ? undefined : "none" }} className="h-full">
+        <SettingsView {...settingsViewProps} />
+      </div>
     </section>
   );
 }
