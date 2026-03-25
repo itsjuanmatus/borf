@@ -486,8 +486,8 @@ export function usePlaylistController({
           const resolved = resolveSongsByIds(payload.songIds);
           if (resolved.length > 0) {
             setDragOverlaySong({
-              title: resolved[0]!.title,
-              artworkPath: resolved[0]!.artwork_path,
+              title: resolved[0]?.title,
+              artworkPath: resolved[0]?.artwork_path,
             });
           } else {
             const meta = data as { songTitle?: string; songArtworkPath?: string | null };

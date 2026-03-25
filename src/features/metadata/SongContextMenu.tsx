@@ -122,6 +122,7 @@ function PlaylistSubmenu({
 
   return (
     <div
+      role="menu"
       ref={submenuRef}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -159,12 +160,14 @@ export function SongContextMenu({
   const leaveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null);
+  const prevMenuRef = useRef(menu);
 
   // Reset submenu when menu opens/closes
-  useEffect(() => {
-    setSubmenuOpen(false);
-    setTriggerRect(null);
-  }, [menu]);
+  if (menu !== prevMenuRef.current) {
+    prevMenuRef.current = menu;
+    if (submenuOpen) setSubmenuOpen(false);
+    if (triggerRect) setTriggerRect(null);
+  }
 
   // Clean up leave timeout on unmount
   useEffect(() => {
@@ -220,6 +223,7 @@ export function SongContextMenu({
       >
         Add to Queue
       </button>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: hover zone wrapping button + submenu popup */}
       <div onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
         <button
           ref={triggerRef}
