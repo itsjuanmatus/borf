@@ -35,7 +35,13 @@ interface PlaylistSubmenuProps {
   onMouseLeave: () => void;
 }
 
-function PlaylistSubmenu({ playlists, triggerRect, onSelect, onMouseEnter, onMouseLeave }: PlaylistSubmenuProps) {
+function PlaylistSubmenu({
+  playlists,
+  triggerRect,
+  onSelect,
+  onMouseEnter,
+  onMouseLeave,
+}: PlaylistSubmenuProps) {
   const submenuRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
 
@@ -81,7 +87,9 @@ function PlaylistSubmenu({ playlists, triggerRect, onSelect, onMouseEnter, onMou
     return children.map((node) => {
       if (node.is_folder) {
         const folderChildren = childrenByParent.get(node.id) ?? [];
-        if (!folderChildren.some((c) => !c.is_folder || (childrenByParent.get(c.id)?.length ?? 0) > 0)) {
+        if (
+          !folderChildren.some((c) => !c.is_folder || (childrenByParent.get(c.id)?.length ?? 0) > 0)
+        ) {
           return null;
         }
         return (

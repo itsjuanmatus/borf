@@ -27,10 +27,7 @@ function InsertionGap({ id }: { id: string }) {
   const droppable = useDroppable({ id });
 
   return (
-    <div
-      ref={droppable.setNodeRef}
-      className="flex h-3 items-center px-2"
-    >
+    <div ref={droppable.setNodeRef} className="flex h-3 items-center px-2">
       <div
         className={cn(
           "h-0.5 w-full rounded-full transition-colors",
@@ -67,8 +64,7 @@ function TreeNode({
 
   const { active } = useDndContext();
   const activeDragType = (active?.data.current as { type?: string } | undefined)?.type;
-  const showDropHighlight =
-    droppable.isOver && !(node.is_folder && activeDragType === "song");
+  const showDropHighlight = droppable.isOver && !(node.is_folder && activeDragType === "song");
 
   const childNodes = childrenByParent.get(node.id) ?? [];
   const isExpanded = node.is_folder ? expandedFolderIds.has(node.id) : false;
@@ -128,9 +124,7 @@ function TreeNode({
         <div>
           {childNodes.map((childNode, i) => (
             <div key={childNode.id}>
-              {isDraggingNode && i === 0 ? (
-                <InsertionGap id={`playlist-gap:${node.id}:0`} />
-              ) : null}
+              {isDraggingNode && i === 0 ? <InsertionGap id={`playlist-gap:${node.id}:0`} /> : null}
               <TreeNode
                 node={childNode}
                 depth={depth + 1}
@@ -142,9 +136,7 @@ function TreeNode({
                 onSelectPlaylist={onSelectPlaylist}
                 onContextMenu={onContextMenu}
               />
-              {isDraggingNode ? (
-                <InsertionGap id={`playlist-gap:${node.id}:${i + 1}`} />
-              ) : null}
+              {isDraggingNode ? <InsertionGap id={`playlist-gap:${node.id}:${i + 1}`} /> : null}
             </div>
           ))}
         </div>
@@ -290,9 +282,7 @@ export function PlaylistTree({
       ) : (
         rootNodes.map((node, i) => (
           <div key={node.id}>
-            {isDraggingNode && i === 0 ? (
-              <InsertionGap id="playlist-gap:root:0" />
-            ) : null}
+            {isDraggingNode && i === 0 ? <InsertionGap id="playlist-gap:root:0" /> : null}
             <TreeNode
               node={node}
               depth={0}
@@ -304,9 +294,7 @@ export function PlaylistTree({
               onSelectPlaylist={onSelectPlaylist}
               onContextMenu={onContextMenu}
             />
-            {isDraggingNode ? (
-              <InsertionGap id={`playlist-gap:root:${i + 1}`} />
-            ) : null}
+            {isDraggingNode ? <InsertionGap id={`playlist-gap:root:${i + 1}`} /> : null}
           </div>
         ))
       )}
